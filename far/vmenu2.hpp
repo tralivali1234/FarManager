@@ -34,10 +34,21 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "dialog.hpp"
 
+// Platform:
+
+// Common:
+#include "common/function_ref.hpp"
+#include "common/range.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct menu_item;
 struct MenuItemEx;
-struct MenuDataEx;
 struct SortItemParam;
 
 class VMenu2 : public Dialog
@@ -45,24 +56,25 @@ class VMenu2 : public Dialog
 	struct private_tag {};
 
 public:
-	static vmenu2_ptr create(const string& Title, const MenuDataEx *Data, size_t ItemCount, int MaxHeight=0, DWORD Flags=0);
+	static vmenu2_ptr create(const string& Title, span<const menu_item> Data, int MaxHeight=0, DWORD Flags=0);
 
 	VMenu2(private_tag, int MaxHeight);
 
-	virtual int GetTypeAndName(string &strType, string &strName) override;
-	virtual int GetType() const override { return windowtype_menu; }
-	virtual bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
-	virtual void SetPosition(int X1, int Y1, int X2, int Y2) override;
+	int GetTypeAndName(string &strType, string &strName) override;
+	int GetType() const override { return windowtype_menu; }
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	void SetPosition(rectangle Where) override;
+	intptr_t SendMessage(intptr_t Msg,intptr_t Param1,void* Param2) override;
 
 	void Resize(bool force=false);
 	void SetTitle(const string& Title);
 	void SetBottomTitle(const string& Title);
 	void SetBoxType(int BoxType);
 	void SetMenuFlags(DWORD Flags);
-	void AssignHighlights(int Reverse);
+	void AssignHighlights(bool Reverse = false);
 	void clear();
 	int DeleteItem(int ID,int Count=1);
-	int AddItem(const MenuItemEx& NewItem,int PosAdd=0x7FFFFFFF);
+	int AddItem(const MenuItemEx& NewItem,int PosAdd = std::numeric_limits<int>::max());
 	int AddItem(const FarList *NewItem);
 	int AddItem(const string& NewStrItem);
 	int FindItem(int StartIndex, const string& Pattern, unsigned long long Flags = 0);
@@ -70,8 +82,10 @@ public:
 	bool empty() { return !size(); }
 	int GetSelectPos();
 	int SetSelectPos(int Pos, int Direct=0/*, bool stop_on_edge=false*/);
-	int GetCheck(int Position=-1);
-	void SetCheck(int Check, int Position=-1);
+	wchar_t GetCheck(int Position=-1);
+	void SetCheck(int Position=-1);
+	void SetCustomCheck(wchar_t Char, int Position = -1);
+	void ClearCheck(int Position = -1);
 	void UpdateItemFlags(int Pos, unsigned long long NewFlags);
 	void SetMaxHeight(int NewMaxHeight){MaxHeight=NewMaxHeight; Resize();}
 	/*
@@ -83,18 +97,29 @@ public:
 	intptr_t GetExitCode();
 	void Close(int ExitCode=-2, bool Force = false);
 
-	any* GetUserData(int Position = -1) const;
+	intptr_t GetSimpleUserData(int Position = -1) const;
+
+	const std::any* GetComplexUserData(int Position = -1) const;
+	std::any* GetComplexUserData(int Position = -1);
+
 	template<class T>
-	T* GetUserDataPtr(intptr_t Position = -1) const
+	const T* GetComplexUserDataPtr(intptr_t Position = -1) const
 	{
-		return any_cast<T>(GetUserData(Position));
+		return std::any_cast<T>(GetComplexUserData(Position));
 	}
+
+	template<class T>
+	T* GetComplexUserDataPtr(intptr_t Position = -1)
+	{
+		return std::any_cast<T>(GetComplexUserData(Position));
+	}
+
 	void Key(int key);
 	int GetSelectPos(FarListPos* ListPos);
 	int SetSelectPos(const FarListPos* ListPos, int Direct = 0);
 
 	void SortItems(bool Reverse, int Offset);
-	void SortItems(const std::function<bool(const MenuItemEx&, const MenuItemEx&, SortItemParam&)>& Pred, bool Reverse = false, int Offset = 0);
+	void SortItems(function_ref<bool(const MenuItemEx&, const MenuItemEx&, SortItemParam&)> Pred, bool Reverse = false, int Offset = 0);
 
 	void Pack();
 	MenuItemEx& at(size_t n);
@@ -108,13 +133,20 @@ private:
 	string GetMenuTitle(bool bottom = false);
 	VMenu& ListBox() const { return *GetAllItem()[0].ListPtr; }
 
+	enum class box_type
+	{
+		full,
+		thin,
+		none
+	};
+
+	box_type m_BoxType{ box_type::full };
 	int MaxHeight;
 	int cancel;
 	int m_X1;
 	int m_Y1;
 	int m_X2;
 	int m_Y2;
-	bool ShortBox;
 	INPUT_RECORD DefRec;
 	int InsideCall;
 	bool NeedResize;

@@ -31,14 +31,27 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "pathmix.hpp"
+
+// Internal:
 #include "strmix.hpp"
 #include "regex_helpers.hpp"
 #include "string_utils.hpp"
 #include "cvtname.hpp"
+#include "filelist.hpp"
+#include "plugin.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 void NTPath::Transform()
 {
@@ -52,10 +65,9 @@ void NTPath::Transform()
 			if (!HasPathPrefix(Data))
 			{
 				ReplaceSlashToBackslash(Data);
-				string Prefix(ParsePath(Data) == root_type::drive_letter? L"\\\\?\\" : L"\\\\?\\UNC");
-				while(ReplaceStrings(Data,L"\\\\",L"\\"))
-					;
-				Data=Prefix+Data;
+				const auto Prefix = ParsePath(Data) == root_type::drive_letter? L"\\\\?\\"sv : L"\\\\?\\UNC"sv;
+				remove_duplicates(Data, L'\\');
+				Data.insert(0, Prefix);
 			}
 		}
 		static const bool is_win2k = !IsWindowsXPOrGreater();
@@ -68,112 +80,130 @@ void NTPath::Transform()
 	}
 }
 
-string KernelPath(const string& NtPath)
+string KernelPath(string_view const NtPath)
 {
 	return KernelPath(string(NtPath));
 }
 
-string KernelPath(string&& NtPath)
+string KernelPath(string NtPath)
 {
-	if (NtPath.size() > 1 && NtPath[1] == L'\\')
+	if (HasPathPrefix(NtPath))
 	{
-		NtPath[1] = L'?';
+		NtPath[1] = NtPath[2] = L'?';
 	}
 	return NtPath;
 }
 
 
-root_type ParsePath(const string_view& Path, size_t* DirectoryOffset, bool* Root)
+root_type ParsePath(const string_view Path, size_t* const RootSize, bool* const RootOnly)
 {
-	auto Result = root_type::unknown;
+	const auto re = [](const wchar_t* const Str) { return std::wregex(Str, std::regex::icase | std::regex::optimize); };
 
-	static struct
+	static const struct
 	{
 		root_type Type;
-		const wchar_t* REStr;
 		std::wregex re;
 	}
-	PathTypes[] =
+	PathTypes[]
 	{
-		// TODO: tests for all these types
+#define RE_PATH_PREFIX(x) RE_C_GROUP(RE_BEGIN RE_BACKSLASH RE_NC_GROUP(RE_BACKSLASH RE_Q_MARK RE_OR RE_BACKSLASH RE_DOT RE_OR RE_Q_MARK RE_Q_MARK) RE_BACKSLASH x )
 
-#define RE_PATH_PREFIX(x) RE_C_GROUP(RE_BEGIN RE_BACKSLASH RE_REPEAT(2) RE_ANY_OF(RE_Q_MARK RE_DOT) RE_BACKSLASH x )
-
-		// x:<whatever> or x:\\<whatever>
-		{ root_type::drive_letter, RE_C_GROUP(RE_BEGIN RE_ANY RE_ESCAPE(L":")) RE_NC_GROUP(RE_ANY_SLASH RE_ZERO_OR_ONE_GREEDY) },
-		// \\?\x: or \\?\x:\ or \\?\x:\<whatever>
-		{ root_type::unc_drive_letter, RE_PATH_PREFIX(L".\\:") RE_ANY_SLASH_OR_NONE },
-		// \\server\share or \\server\share\ or \\server\share<whatever>
-		{ root_type::remote, RE_C_GROUP(RE_BEGIN RE_ANY_SLASH RE_REPEAT(2) RE_NONE_OF(RE_SPACE RE_SLASHES RE_Q_MARK) RE_ONE_OR_MORE_LAZY RE_ANY_SLASH RE_ONE_OR_MORE_LAZY RE_NONE_OF(RE_SLASHES) RE_ONE_OR_MORE_GREEDY) RE_ANY_SLASH_OR_NONE },
-		// \\?\unc\server\share or \\?\unc\server\share\ or \\?\unc\server\share<whatever>
-		{ root_type::unc_remote, RE_PATH_PREFIX(L"unc" RE_BACKSLASH RE_NONE_OF(RE_SPACE RE_SLASHES RE_Q_MARK) RE_ONE_OR_MORE_LAZY RE_BACKSLASH RE_NONE_OF(RE_SLASHES) RE_ONE_OR_MORE_GREEDY) RE_ANY_SLASH_OR_NONE },
-		// \\?\Volume{GUID} or \\?\Volume{GUID}\ or \\?\Volume{GUID}<whatever>
-		{ root_type::volume, RE_PATH_PREFIX(L"volume" RE_ESCAPE(L"{") RE_ANY_UUID RE_ESCAPE(L"}")) RE_ANY_SLASH_OR_NONE },
-		// \\?\pipe\ or \\?\pipe
-		{ root_type::pipe, RE_PATH_PREFIX(L"pipe") RE_ANY_SLASH_OR_NONE },
+		{
+			// x:(...)
+			root_type::drive_letter,
+			re(RE_C_GROUP(RE_BEGIN RE_ANY RE_ESCAPE(L":")) RE_NC_GROUP(RE_ANY_SLASH RE_ZERO_OR_ONE_GREEDY)),
+		},
+		{
+			// \\?\x:(\...)
+			root_type::win32nt_drive_letter,
+			re(RE_PATH_PREFIX(L".\\:") RE_ANY_SLASH_OR_NONE),
+		},
+		{
+			// \\server\share(\...)
+			root_type::remote,
+			re(RE_C_GROUP(RE_BEGIN RE_ANY_SLASH RE_REPEAT(2) RE_NONE_OF(RE_DOT) RE_NONE_OF(RE_SPACE RE_SLASHES RE_Q_MARK) RE_ONE_OR_MORE_LAZY RE_ANY_SLASH RE_ONE_OR_MORE_LAZY RE_NONE_OF(RE_SLASHES) RE_ONE_OR_MORE_GREEDY) RE_ANY_SLASH_OR_NONE),
+		},
+		{
+			// \\?\unc\server\share(\...)
+			root_type::unc_remote,
+			re(RE_PATH_PREFIX(L"unc" RE_BACKSLASH RE_NONE_OF(RE_DOT) RE_NONE_OF(RE_SPACE RE_SLASHES RE_Q_MARK) RE_ONE_OR_MORE_LAZY RE_BACKSLASH RE_NONE_OF(RE_SLASHES) RE_ONE_OR_MORE_GREEDY) RE_ANY_SLASH_OR_NONE),
+		},
+		{
+			// \\?\Volume{UUID}(\...)
+			root_type::volume,
+			re(RE_PATH_PREFIX(L"volume" RE_ESCAPE(L"{") RE_ANY_UUID RE_ESCAPE(L"}")) RE_ANY_SLASH_OR_NONE),
+		},
+		{
+			// \\?\pipe(\...)
+			root_type::pipe,
+			re(RE_PATH_PREFIX(L"pipe") RE_ANY_SLASH_OR_NONE),
+		},
+		{
+			// \\?\<anything_else>(\...)
+			root_type::unknown_rootlike,
+			re(RE_PATH_PREFIX(L"." RE_ONE_OR_MORE_LAZY) RE_ANY_SLASH_OR_NONE),
+		}
 
 #undef RE_PATH_REFIX
 	};
-	static bool REInit = false;
-	if(!REInit)
-	{
-		std::for_each(RANGE(PathTypes, i)
-		{
-			i.re.assign(i.REStr, std::regex::icase | std::regex::optimize);
-		});
-		REInit = true;
-	}
 
 	std::wcmatch Match;
 
-	const auto ItemIterator = std::find_if(CONST_RANGE(PathTypes, i) { return std::regex_search(ALL_CONST_RANGE(Path), Match, i.re); });
-
-	if (ItemIterator != std::cend(PathTypes))
+	const auto ItemIterator = std::find_if(CONST_RANGE(PathTypes, i)
 	{
-		const size_t MatchLength = Match[0].length();
-		if (DirectoryOffset)
-		{
-			*DirectoryOffset = MatchLength;
-		}
-		if (Root)
-		{
-			*Root = Path.size() == MatchLength || (Path.size() == (MatchLength + 1) && IsSlash(Path[MatchLength]));
-		}
-		Result = ItemIterator->Type;
-	}
+		return std::regex_search(Path.data(), Path.data() + Path.size(), Match, i.re);
+	});
 
-	return Result;
+	if (ItemIterator == std::cend(PathTypes))
+		return root_type::unknown;
+
+	const size_t MatchLength = Match[0].length();
+
+	if (RootSize)
+		*RootSize = MatchLength;
+
+	if (RootOnly)
+		*RootOnly = Path.size() == MatchLength || (Path.size() == MatchLength + 1 && IsSlash(Path[MatchLength]));
+
+	return ItemIterator->Type;
 }
 
-bool IsAbsolutePath(const string_view& Path)
+bool IsAbsolutePath(const string_view Path)
 {
 	const auto Type = ParsePath(Path);
 
-	return (Type != root_type::unknown && Type != root_type::drive_letter) ||
-	       (Type == root_type::drive_letter && (Path.size() > 2 && IsSlash(Path[2])));
+	return
+		(Type != root_type::unknown && Type != root_type::drive_letter) ||
+		(Type == root_type::drive_letter && (Path.size() > 2 && IsSlash(Path[2])));
 }
 
-bool HasPathPrefix(const string_view& Path)
+bool HasPathPrefix(const string_view Path)
 {
-	/*
-		\\?\
-		\\.\
-		\??\
-	*/
-	return Path.size() > 4 &&  Path[0] == L'\\' && (Path[1] == L'\\' || Path[1] == L'?') && (Path[2] == L'?' || Path[2] == L'.') && Path[3] == L'\\';
+	return
+		starts_with(Path, L"\\\\?\\"sv) ||
+		starts_with(Path, L"\\\\.\\"sv) ||
+		starts_with(Path, L"\\??\\"sv);
 }
 
-bool PathCanHoldRegularFile(const string& Path)
+string_view ExtractPathPrefix(const string_view Path)
+{
+	if (starts_with_icase(Path, L"\\\\?\\UNC\\"sv))
+		return Path.substr(0, 8);
+
+	return HasPathPrefix(Path)? Path.substr(0, 4) : L""sv;
+}
+
+bool PathCanHoldRegularFile(string_view const Path)
 {
 	return ParsePath(Path) != root_type::unknown;
 }
 
-bool IsPluginPrefixPath(const string& Path) //Max:
+bool IsPluginPrefixPath(string_view const Path) //Max:
 {
 	if (Path.empty() || Path[0] == L'\\')
 		return false;
 
-	size_t pos = Path.find(L':');
+	const auto pos = Path.find(L':');
 
 	if (pos == string::npos || !pos)
 		return false;
@@ -192,25 +222,42 @@ bool IsPluginPrefixPath(const string& Path) //Max:
 	return SlashPos == string::npos || SlashPos > pos;
 }
 
-bool TestParentFolderName(const string& Name)
+bool IsParentDirectory(string_view const Str)
 {
-	return (Name.size() == 2 && Name[0] == L'.' && Name[1] == L'.') || (Name.size() == 3 && Name[0] == L'.' && Name[1] == L'.' && IsSlash(Name[2]));
+	return DeleteEndSlash(Str) == L".."sv;
 }
 
-bool TestCurrentDirectory(const string& TestDir)
+bool IsParentDirectory(const FileListItem& Data)
 {
-	return equal_icase(os::fs::GetCurrentDirectory(), TestDir);
+	return Data.UserFlags & PPIF_RESERVED && IsParentDirectory(static_cast<const os::fs::find_data&>(Data));
 }
 
-string_view PointToName(string_view Path)
+bool IsParentDirectory(const os::fs::find_data& Data)
 {
-	if (Path.empty())
-		return Path;
+	return
+		Data.Attributes & FILE_ATTRIBUTE_DIRECTORY &&
+		IsParentDirectory(Data.FileName) &&
+		(!Data.HasAlternateFileName() || Data.AlternateFileName() == Data.FileName);
+}
 
-	auto NameStart = std::find_if(ALL_CONST_REVERSE_RANGE(Path), IsSlash);
-	Path.remove_prefix(Path.crend() - NameStart);
+bool IsParentDirectory(const PluginPanelItem& Data)
+{
+	return
+		// Plugins are unreliable and sometimes don't set this attribute
+		// Data.FileAttributes & FILE_ATTRIBUTE_DIRECTORY &&
+		IsParentDirectory(NullToEmpty(Data.FileName)) &&
+		(!Data.AlternateFileName || !*Data.AlternateFileName || equal(NullToEmpty(Data.AlternateFileName), NullToEmpty(Data.FileName)));
+}
 
-	return Path;
+bool IsCurrentDirectory(string_view const Str)
+{
+	return starts_with(Str, L"."sv) && (Str.size() == 1 || (Str.size() == 2 && IsSlash(Str[1])));
+}
+
+string_view PointToName(string_view const Path)
+{
+	const auto NameStart = std::find_if(ALL_CONST_REVERSE_RANGE(Path), IsSlash);
+	return Path.substr(Path.crend() - NameStart);
 }
 
 //   Аналог PointToName, только для строк типа
@@ -224,73 +271,79 @@ string_view PointToFolderNameIfFolder(string_view Path)
 	return PointToName(Path);
 }
 
-string_view PointToExt(string_view Path)
+std::pair<string_view, string_view> name_ext(string_view const Path)
 {
-	Path = PointToName(Path);
+	auto ExtensionStart = std::find_if(ALL_CONST_REVERSE_RANGE(Path), [](wchar_t const Char){ return Char == L'.' || IsSlash(Char); });
+	if (ExtensionStart != Path.crend() && *ExtensionStart != L'.')
+		ExtensionStart = Path.crend();
 
-	if (Path.empty())
-		return Path;
+	const auto NameSize = ExtensionStart == Path.crend()? Path.size() : Path.crend() - ExtensionStart - 1;
 
-	const auto ExtensionStart = std::find(ALL_CONST_REVERSE_RANGE(Path), L'.');
-	Path.remove_prefix(ExtensionStart == Path.crend()? Path.size() : Path.crend() - ExtensionStart - 1);
-	return Path;
+	return { Path.substr(0, NameSize), Path.substr(NameSize) };
 }
 
 
-static int SlashType(const wchar_t *pw, const wchar_t *pe, wchar_t &TypeSlash)
+static size_t SlashType(const wchar_t* Begin, const wchar_t* End, wchar_t &TypeSlash)
 {
-	int Len = 0, Slash = 0, BackSlash = 0;
-	while ((pe && pw < pe) || (!pe && *pw))
+	size_t Slash = 0, BackSlash = 0;
+
+	auto Iterator = Begin;
+	for (; End? Iterator != End : *Iterator; ++Iterator)
 	{
-		wchar_t c = *pw++;
+		const auto c = *Iterator;
 		BackSlash += (c == L'\\');
 		Slash += (c == L'/');
-		++Len;
 	}
 
-	TypeSlash = (Slash > BackSlash ? L'/' : L'\\');
-	return Len;
+	TypeSlash = Slash > BackSlash? L'/' : L'\\';
+	return Iterator - Begin;
 }
 
 // Функция работает с обоими видами слешей, также происходит
-//	изменение уже существующего конечного слеша на такой, который
-// указан, или встречается чаще (при равенстве '\'). 
+// изменение уже существующего конечного слеша на такой, который
+// указан, или встречается чаще (при равенстве '\').
 //
 bool AddEndSlash(wchar_t *Path, wchar_t TypeSlash)
 {
 	if (!Path)
 		return false;
 
-	int len = IsSlash(TypeSlash)? static_cast<int>(wcslen(Path)) : SlashType(Path, nullptr, TypeSlash);
+	auto len = IsSlash(TypeSlash)? wcslen(Path) : SlashType(Path, nullptr, TypeSlash);
 
-	if (len > 0 && IsSlash(Path[len-1]))
+	if (len && IsSlash(Path[len-1]))
 		--len;
 
 	Path[len++] = TypeSlash;
-	Path[len] = L'\0';
+	Path[len] = {};
 	return true;
 }
 
 bool AddEndSlash(wchar_t *Path)
 {
-	return AddEndSlash(Path, L'\0');
+	return AddEndSlash(Path, {});
+}
+
+string AddEndSlash(string_view const Path)
+{
+	string Result(Path);
+	AddEndSlash(Result);
+	return Result;
 }
 
 void AddEndSlash(string &strPath, wchar_t TypeSlash)
 {
-	const wchar_t *Path = strPath.data();
-	auto len = strPath.size();
 	if (!IsSlash(TypeSlash))
-		SlashType(Path, Path+len, TypeSlash);
+		SlashType(strPath.data(), strPath.data() + strPath.size(), TypeSlash);
 
-	wchar_t LastSlash = L'\0';
-	if (len && IsSlash(Path[len-1]))
-		LastSlash = Path[--len];
+	wchar_t LastSlash{};
+
+	if (!strPath.empty() && IsSlash(strPath.back()))
+		LastSlash = strPath.back();
 
 	if (TypeSlash != LastSlash)
 	{
 		if (LastSlash)
-			strPath[len] = TypeSlash;
+			strPath.back() = TypeSlash;
 		else
 			strPath.push_back(TypeSlash);
 	}
@@ -298,7 +351,7 @@ void AddEndSlash(string &strPath, wchar_t TypeSlash)
 
 void AddEndSlash(string &strPath)
 {
-	AddEndSlash(strPath, L'\0');
+	AddEndSlash(strPath, {});
 }
 
 void DeleteEndSlash(wchar_t *Path)
@@ -312,31 +365,37 @@ void DeleteEndSlash(string &Path)
 	Path.resize(Path.rend() - std::find_if_not(Path.rbegin(), Path.rend(), IsSlash));
 }
 
-void DeleteEndSlash(string_view& Path)
+string_view DeleteEndSlash(string_view Path)
 {
 	Path.remove_suffix(std::find_if_not(Path.rbegin(), Path.rend(), IsSlash) - Path.rbegin());
+	return Path;
 }
 
-bool CutToSlash(string &strStr, bool bInclude)
+bool CutToSlash(string_view& Str, bool const RemoveSlash)
 {
-	const auto pos = FindLastSlash(strStr);
-	if (pos != string::npos)
-	{
-		if (pos==3 && HasPathPrefix(strStr))
-			return false;
+	const auto pos = FindLastSlash(Str);
+	if (pos == string::npos)
+		return false;
 
-		if (bInclude)
-			strStr.resize(pos);
-		else
-			strStr.resize(pos+1);
+	if (pos == 3 && HasPathPrefix(Str))
+		return false;
 
-		return true;
-	}
+	Str.remove_suffix(Str.size() - pos - (RemoveSlash? 0 : 1));
 
-	return false;
+	return true;
 }
 
-bool CutToParent(string& Str)
+bool CutToSlash(string& Str, bool const RemoveSlash)
+{
+	string_view View(Str);
+	if (!CutToSlash(View, RemoveSlash))
+		return false;
+
+	Str.resize(View.size());
+	return true;
+}
+
+bool CutToParent(string_view& Str)
 {
 	if (Str.empty())
 		return false;
@@ -356,49 +415,67 @@ bool CutToParent(string& Str)
 	if (!NewSize)
 		return false;
 
-	Str.resize(NewSize);
+	Str.remove_suffix(Str.size() - NewSize);
 	return true;
 }
 
-bool ContainsSlash(const string_view& Str)
+bool CutToParent(string& Str)
+{
+	string_view View(Str);
+	if (!CutToParent(View))
+		return false;
+
+	Str.resize(View.size());
+	return true;
+}
+
+bool ContainsSlash(const string_view Str)
 {
 	return FindSlash(Str) != string::npos;
 }
 
-size_t FindSlash(const string_view& Str)
+size_t FindSlash(const string_view Str)
 {
 	const auto SlashPos = std::find_if(ALL_CONST_RANGE(Str), IsSlash);
 	return SlashPos == Str.cend()? string::npos : SlashPos - Str.cbegin();
 }
 
-size_t FindLastSlash(const string_view& Str)
+size_t FindLastSlash(const string_view Str)
 {
 	const auto SlashPos = std::find_if(ALL_CONST_REVERSE_RANGE(Str), IsSlash);
 	return SlashPos == Str.crend()? string::npos : Str.crend() - SlashPos - 1;
 }
 
 // find path root component (drive letter / volume name / server share) and calculate its length
-size_t GetPathRootLength(const string &Path)
+static size_t GetPathRootLength(string_view const Path)
 {
 	size_t DirOffset = 0;
-	return (ParsePath(Path, &DirOffset) == root_type::unknown)? 0 : DirOffset;
+	return ParsePath(Path, &DirOffset) == root_type::unknown? 0 : DirOffset;
 }
 
-string ExtractPathRoot(const string &Path)
+string_view extract_root_device(string_view const Path)
 {
-	size_t PathRootLen = GetPathRootLength(Path);
+	const auto RootSize = GetPathRootLength(Path);
+	if (!RootSize)
+		return{};
 
-	if (PathRootLen)
-	{
-		string result(Path, 0, PathRootLen);
-		AddEndSlash(result);
-		return result;
-	}
-	else
-		return {};
+	return Path.substr(0, RootSize - (IsSlash(Path[RootSize - 1])? 1 : 0));
 }
 
-string ExtractFileName(const string &Path)
+string extract_root_directory(string_view const Path)
+{
+	const auto RootSize = GetPathRootLength(Path);
+	if (!RootSize)
+		return{};
+
+	if (IsSlash(Path[RootSize - 1]))
+		return string{ Path.substr(0, RootSize) };
+
+	// A fancy way to add a trailing slash
+	return path::join(Path.substr(0, RootSize), L""sv);
+}
+
+string_view ExtractFileName(string_view const Path)
 {
 	auto p = FindLastSlash(Path);
 	p = p == string::npos? 0 : p + 1;
@@ -406,7 +483,7 @@ string ExtractFileName(const string &Path)
 	return Path.substr(p);
 }
 
-string ExtractFilePath(const string &Path)
+string ExtractFilePath(string_view const Path)
 {
 	auto p = FindLastSlash(Path);
 	if (p == string::npos)
@@ -417,191 +494,439 @@ string ExtractFilePath(const string &Path)
 	const auto PathRootLen = GetPathRootLength(Path);
 
 	if (p <= PathRootLen && PathRootLen)
-	{
-		string result(Path, 0, PathRootLen);
-		AddEndSlash(result);
-		return result;
-	}
+		return path::join(Path.substr(0, PathRootLen), L""sv);
 
-	return string(Path.data(), p);
+	return string(Path.substr(0, p));
 }
 
-bool IsRootPath(const string_view& Path)
+bool IsRootPath(const string_view Path)
 {
 	bool IsRoot = false;
 	ParsePath(Path, nullptr, &IsRoot);
 	return IsRoot || IsRelativeRoot(Path);
 }
 
-bool PathStartsWith(const string_view& Path, const string_view& Start)
+bool PathStartsWith(const string_view Path, const string_view Start)
 {
-	auto PathPart = Start;
-	DeleteEndSlash(PathPart);
+	const auto PathPart = DeleteEndSlash(Start);
 	return starts_with(Path, PathPart) && (Path.size() == PathPart.size() || IsSlash(Path[PathPart.size()]));
 }
 
-void TestPathParser()
+#ifdef ENABLE_TESTS
+
+#include "testing.hpp"
+
+TEST_CASE("path.join")
 {
-#ifdef _DEBUG
-    assert(ExtractPathRoot(L"") == L"");
-    assert(ExtractPathRoot(L"\\") == L"");
-    assert(ExtractPathRoot(L"file") == L"");
-    assert(ExtractPathRoot(L"path\\file") == L"");
-    assert(ExtractPathRoot(L"C:") == L"C:\\");
-    assert(ExtractPathRoot(L"C:\\") == L"C:\\");
-    assert(ExtractPathRoot(L"C:\\path\\file") == L"C:\\");
-    assert(ExtractPathRoot(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractPathRoot(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractPathRoot(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractPathRoot(L"\\\\server\\share") == L"\\\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\server\\share\\") == L"\\\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\server\\share\\path\\file") == L"\\\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\1.2.3.4\\share\\path\\file") == L"\\\\1.2.3.4\\share\\");
-    assert(ExtractPathRoot(L"\\\\?\\UNC\\server\\share") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\?\\UNC\\server\\share\\") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\?\\UNC\\server\\share\\path\\file") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractPathRoot(L"\\\\?\\UNC\\1.2.3.4\\share\\path\\file") == L"\\\\?\\UNC\\1.2.3.4\\share\\");
+	REQUIRE(path::join(L"foo"sv, L""sv)                         == L"foo\\"sv);
+	REQUIRE(path::join(L"foo"sv, L"\\"sv)                       == L"foo\\"sv);
+	REQUIRE(path::join(L""sv, L""sv)                            == L""sv);
+	REQUIRE(path::join(L""sv, L"\\"sv)                          == L""sv);
+	REQUIRE(path::join(L""sv, L"foo"sv)                         == L"foo"sv);
+	REQUIRE(path::join(L"\\foo"sv, L""sv)                       == L"\\foo\\"sv);
+	REQUIRE(path::join(L"\\foo"sv, L"\\"sv)                     == L"\\foo\\"sv);
+	REQUIRE(path::join(L"\\"sv, L"foo\\"sv)                     == L"foo"sv);
+	REQUIRE(path::join(L"foo"sv, L"bar"sv)                      == L"foo\\bar"sv);
+	REQUIRE(path::join(L"\\foo"sv, L"bar\\"sv)                  == L"\\foo\\bar"sv);
+	REQUIRE(path::join(L"foo\\"sv, L"bar"sv)                    == L"foo\\bar"sv);
+	REQUIRE(path::join(L"foo\\"sv, L"\\bar"sv)                  == L"foo\\bar"sv);
+	REQUIRE(path::join(L"foo\\"sv, L'\\', L"\\bar"sv)           == L"foo\\bar"sv);
+	REQUIRE(path::join(L"foo\\"sv, L""sv, L"\\bar"sv)           == L"foo\\bar"sv);
+	REQUIRE(path::join(L"\\\\foo\\\\"sv, L"\\\\bar\\"sv)        == L"\\\\foo\\bar"sv);
+}
 
-    assert(ExtractFilePath(L"") == L"");
-    assert(ExtractFilePath(L"\\") == L"");
-    assert(ExtractFilePath(L"\\file") == L"");
-    assert(ExtractFilePath(L"file") == L"");
-    assert(ExtractFilePath(L"path\\") == L"path");
-    assert(ExtractFilePath(L"path\\file") == L"path");
-    assert(ExtractFilePath(L"C:") == L"C:\\");
-    assert(ExtractFilePath(L"C:\\") == L"C:\\");
-    assert(ExtractFilePath(L"C:\\file") == L"C:\\");
-    assert(ExtractFilePath(L"C:\\path\\file") == L"C:\\path");
-    assert(ExtractFilePath(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractFilePath(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractFilePath(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\");
-    assert(ExtractFilePath(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file") == L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path");
-    assert(ExtractFilePath(L"\\\\server\\share") == L"\\\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\server\\share\\") == L"\\\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\server\\share\\file") == L"\\\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\server\\share\\path\\file") == L"\\\\server\\share\\path");
-    assert(ExtractFilePath(L"\\\\?\\UNC\\server\\share") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\?\\UNC\\server\\share\\") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\?\\UNC\\server\\share\\file") == L"\\\\?\\UNC\\server\\share\\");
-    assert(ExtractFilePath(L"\\\\?\\UNC\\server\\share\\path\\file") == L"\\\\?\\UNC\\server\\share\\path");
-
-    assert(ExtractFileName(L"") == L"");
-    assert(ExtractFileName(L"\\") == L"");
-    assert(ExtractFileName(L"\\file") == L"file");
-    assert(ExtractFileName(L"file") == L"file");
-    assert(ExtractFileName(L"path\\") == L"");
-    assert(ExtractFileName(L"path\\file") == L"file");
-    assert(ExtractFileName(L"C:") == L"");
-    assert(ExtractFileName(L"C:\\") == L"");
-    assert(ExtractFileName(L"C:\\file") == L"file");
-    assert(ExtractFileName(L"C:\\path\\file") == L"file");
-    assert(ExtractFileName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}") == L"");
-    assert(ExtractFileName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\") == L"");
-    assert(ExtractFileName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file") == L"file");
-    assert(ExtractFileName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file") == L"file");
-    assert(ExtractFileName(L"\\\\server\\share") == L"");
-    assert(ExtractFileName(L"\\\\server\\share\\") == L"");
-    assert(ExtractFileName(L"\\\\server\\share\\file") == L"file");
-    assert(ExtractFileName(L"\\\\server\\share\\path\\file") == L"file");
-    assert(ExtractFileName(L"\\\\?\\UNC\\server\\share") == L"");
-    assert(ExtractFileName(L"\\\\?\\UNC\\server\\share\\") == L"");
-    assert(ExtractFileName(L"\\\\?\\UNC\\server\\share\\file") == L"file");
-    assert(ExtractFileName(L"\\\\?\\UNC\\server\\share\\path\\file") == L"file");
-
-	assert(PointToName(L""_sv) == L""_sv);
-	assert(PointToName(L"\\"_sv) == L""_sv);
-	assert(PointToName(L"\\file"_sv) == L"file"_sv);
-	assert(PointToName(L"file"_sv) == L"file"_sv);
-	assert(PointToName(L"path\\"_sv) == L""_sv);
-	assert(PointToName(L"path\\file"_sv) == L"file"_sv);
-	//assert(PointToName(L"C:"_sv) == L""_sv);
-	assert(PointToName(L"C:\\"_sv) == L""_sv);
-	assert(PointToName(L"C:\\file"_sv) == L"file"_sv);
-	assert(PointToName(L"C:\\path\\file"_sv) == L"file"_sv);
-	//assert(PointToName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"_sv) == L""_sv);
-	assert(PointToName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"_sv) == L""_sv);
-	assert(PointToName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file"_sv) == L"file"_sv);
-	assert(PointToName(L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file"_sv) == L"file"_sv);
-	//assert(PointToName(L"\\\\server\\share"_sv) == L""_sv);
-	assert(PointToName(L"\\\\server\\share\\"_sv) == L""_sv);
-	assert(PointToName(L"\\\\server\\share\\file"_sv) == L"file"_sv);
-	assert(PointToName(L"\\\\server\\share\\path\\file"_sv) == L"file"_sv);
-	//assert(PointToName(L"\\\\?\\UNC\\server\\share"_sv) == L""_sv);
-	assert(PointToName(L"\\\\?\\UNC\\server\\share\\"_sv) == L""_sv);
-	assert(PointToName(L"\\\\?\\UNC\\server\\share\\file"_sv) == L"file"_sv);
-	assert(PointToName(L"\\\\?\\UNC\\server\\share\\path\\file"_sv) == L"file"_sv);
-
-	assert(PointToExt(L""_sv) == L""_sv);
-	assert(PointToExt(L"file"_sv) == L""_sv);
-	assert(PointToExt(L"path\\file"_sv) == L""_sv);
-	assert(PointToExt(L"file.ext"_sv) == L".ext"_sv);
-	assert(PointToExt(L"path\\file.ext"_sv) == L".ext"_sv);
-	assert(PointToExt(L"file.ext1.ext2"_sv) == L".ext2"_sv);
-	assert(PointToExt(L"path\\file.ext1.ext2"_sv) == L".ext2"_sv);
-
-    assert(IsRootPath(L"C:"));
-    assert(IsRootPath(L"C:\\"));
-    assert(IsRootPath(L"\\"));
-    assert(!IsRootPath(L"C:\\path"));
-
-    assert(PathStartsWith(L"C:\\path\\file", L"C:\\path"));
-    assert(PathStartsWith(L"C:\\path\\file", L"C:\\path\\"));
-    assert(!PathStartsWith(L"C:\\path\\file", L"C:\\pat"));
-    assert(PathStartsWith(L"\\", L""));
-    assert(!PathStartsWith(L"C:\\path\\file", L""));
-
-	static const wchar_t* TestRoots[] =
+TEST_CASE("path.extract_root")
+{
+	static const struct
 	{
-		L"",
-		L"C:",
-		L"C:\\",
-		L"\\\\server\\share\\",
-		L"\\\\?\\C:\\",
-		L"\\\\?\\UNC\\server\\share\\",
-		L"\\\\?\\Volume{f26b206c-f912-11e1-b516-806e6f6e6963}\\",
-		L"\\\\?\\pipe\\",
+		string_view Input, RootDevice, RootDirectory;
+	}
+	Tests[]
+	{
+		{{},                                                                       {}},
+		{L"\\"sv,                                                                  {}},
+		{L"file"sv,                                                                {}},
+		{L"path\\file"sv,                                                          {}},
+		{L"C:"sv,                                                                  L"C:"sv},
+		{L"C:\\"sv,                                                                L"C:"sv},
+		{L"C:\\path\\file"sv,                                                      L"C:"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv,                 L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv,               L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file"sv,     L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv},
+		{L"\\\\server\\share"sv,                                                   L"\\\\server\\share"sv},
+		{L"\\\\server\\share\\"sv,                                                 L"\\\\server\\share"sv},
+		{L"\\\\server\\share\\path\\file"sv,                                       L"\\\\server\\share"sv},
+		{L"\\\\1.2.3.4\\share\\path\\file"sv,                                      L"\\\\1.2.3.4\\share"sv},
+		{L"\\\\?\\UNC\\server\\share"sv,                                           L"\\\\?\\UNC\\server\\share"sv},
+		{L"\\\\?\\UNC\\server\\share\\"sv,                                         L"\\\\?\\UNC\\server\\share"sv},
+		{L"\\\\?\\UNC\\server\\share\\path\\file"sv,                               L"\\\\?\\UNC\\server\\share"sv},
+		{L"\\\\?\\UNC\\1.2.3.4\\share\\path\\file"sv,                              L"\\\\?\\UNC\\1.2.3.4\\share"sv},
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.RootDevice == extract_root_device(i.Input));
+
+		const auto RootDirectory = extract_root_directory(i.Input);
+		if (i.RootDevice.empty())
+			REQUIRE(RootDirectory.empty());
+		else
+			REQUIRE(RootDirectory == i.RootDevice + L"\\"sv);
+	}
+}
+
+TEST_CASE("path.ExtractFilePath")
+{
+	static const struct
+	{
+		string_view Input, Result;
+	}
+	Tests[]
+	{
+		{{},                                                                       {}},
+		{L"\\"sv,                                                                  {}},
+		{L"\\file"sv,                                                              {}},
+		{L"file"sv,                                                                {}},
+		{L"path\\"sv,                                                              L"path"sv},
+		{L"path\\file"sv,                                                          L"path"sv},
+		{L"C:"sv,                                                                  L"C:\\"sv},
+		{L"C:\\"sv,                                                                L"C:\\"sv},
+		{L"C:\\file"sv,                                                            L"C:\\"sv},
+		{L"C:\\path\\file"sv,                                                      L"C:\\path"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv,                 L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv,               L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file"sv,           L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file"sv,     L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path"sv},
+		{L"\\\\server\\share"sv,                                                   L"\\\\server\\share\\"sv},
+		{L"\\\\server\\share\\"sv,                                                 L"\\\\server\\share\\"sv},
+		{L"\\\\server\\share\\file"sv,                                             L"\\\\server\\share\\"sv},
+		{L"\\\\server\\share\\path\\file"sv,                                       L"\\\\server\\share\\path"sv},
+		{L"\\\\?\\UNC\\server\\share"sv,                                           L"\\\\?\\UNC\\server\\share\\"sv},
+		{L"\\\\?\\UNC\\server\\share\\"sv,                                         L"\\\\?\\UNC\\server\\share\\"sv},
+		{L"\\\\?\\UNC\\server\\share\\file"sv,                                     L"\\\\?\\UNC\\server\\share\\"sv},
+		{L"\\\\?\\UNC\\server\\share\\path\\file"sv,                               L"\\\\?\\UNC\\server\\share\\path"sv},
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == ExtractFilePath(i.Input));
+	}
+}
+
+TEST_CASE("path.ExtractFileName")
+{
+	static const struct
+	{
+		string_view Input, Result;
+	}
+	Tests[]
+	{
+		{{},                                                                       {}},
+		{L"\\"sv,                                                                  {}},
+		{L"\\file"sv,                                                              L"file"sv},
+		{L"file"sv,                                                                L"file"sv},
+		{L"path\\"sv,                                                              {}},
+		{L"path\\file"sv,                                                          L"file"sv},
+		{L"C:"sv,                                                                  {}},
+		{L"C:\\"sv,                                                                {}},
+		{L"C:\\file"sv,                                                            L"file"sv},
+		{L"C:\\path\\file"sv,                                                      L"file"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv,                 {}},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv,               {}},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file"sv,           L"file"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file"sv,     L"file"sv},
+		{L"\\\\server\\share"sv,                                                   {}},
+		{L"\\\\server\\share\\"sv,                                                 {}},
+		{L"\\\\server\\share\\file"sv,                                             L"file"sv},
+		{L"\\\\server\\share\\path\\file"sv,                                       L"file"sv},
+		{L"\\\\?\\UNC\\server\\share"sv,                                           {}},
+		{L"\\\\?\\UNC\\server\\share\\"sv,                                         {}},
+		{L"\\\\?\\UNC\\server\\share\\file"sv,                                     L"file"sv},
+		{L"\\\\?\\UNC\\server\\share\\path\\file"sv,                               L"file"sv},
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == ExtractFileName(i.Input));
+	}
+}
+
+TEST_CASE("path.PointToName")
+{
+	static const struct
+	{
+		string_view Input, Result;
+	}
+	Tests[]
+	{
+		{{},                                                                       {}},
+		{L"\\"sv,                                                                  {}},
+		{L"\\file"sv,                                                              L"file"sv},
+		{L"file"sv,                                                                L"file"sv},
+		{L"path\\"sv,                                                              {}},
+		{L"path\\file"sv,                                                          L"file"sv},
+		// {L"C:"sv,                                                                  {}},
+		{L"C:\\"sv,                                                                {}},
+		{L"C:\\file"sv,                                                            L"file"sv},
+		{L"C:\\path\\file"sv,                                                      L"file"sv},
+		// {L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}"sv,                 {}},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\"sv,               {}},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\file"sv,           L"file"sv},
+		{L"\\\\?\\Volume{01e45c83-9ce4-11db-b27f-806d6172696f}\\path\\file"sv,     L"file"sv},
+		// {L"\\\\server\\share"sv,                                                   {}},
+		{L"\\\\server\\share\\"sv,                                                 {}},
+		{L"\\\\server\\share\\file"sv,                                             L"file"sv},
+		{L"\\\\server\\share\\path\\file"sv,                                       L"file"sv},
+		// {L"\\\\?\\UNC\\server\\share"sv,                                           {}},
+		{L"\\\\?\\UNC\\server\\share\\"sv,                                         {}},
+		{L"\\\\?\\UNC\\server\\share\\file"sv,                                     L"file"sv},
+		{L"\\\\?\\UNC\\server\\share\\path\\file"sv,                               L"file"sv},
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == PointToName(i.Input));
+	}
+}
+
+TEST_CASE("path.name_ext")
+{
+	static const struct
+	{
+		string_view Input, Name, Extension;
+	}
+	Tests[]
+	{
+		{ {},                                 {},                        {}         },
+		{ L"file"sv,                          L"file"sv,                 {}         },
+		{ L"path\\file"sv,                    L"path\\file"sv,           {}         },
+		{ L"path.ext\\file"sv,                L"path.ext\\file"sv,       {}         },
+		{ L".\\"sv,                           L".\\"sv,                  {}         },
+		{ L"\\."sv,                           L"\\"sv,                   L"."sv     },
+		{ L"."sv,                             {},                        L"."sv     },
+		{ L".."sv,                            L"."sv,                    L"."sv     },
+		{ L"..."sv,                           L".."sv,                   L"."sv     },
+		{ L"file."sv,                         L"file"sv,                 L"."sv     },
+		{ L".e"sv,                            {},                        L".e"sv    },
+		{ L".ext"sv,                          {},                        L".ext"sv  },
+		{ L"..ext"sv,                         L"."sv,                    L".ext"sv  },
+		{ L"file.ext"sv,                      L"file"sv,                 L".ext"sv  },
+		{ L"path\\file.ext"sv,                L"path\\file"sv,           L".ext"sv  },
+		{ L"file.ext1.ext2"sv,                L"file.ext1"sv,            L".ext2"sv },
+		{ L"path\\file.ext1.ext2"sv,          L"path\\file.ext1"sv,      L".ext2"sv },
+	};
+
+	for (const auto& i: Tests)
+	{
+		const auto& [Name, Extension] = name_ext(i.Input);
+		REQUIRE(i.Name == Name);
+		REQUIRE(i.Extension == Extension);
+	}
+}
+
+TEST_CASE("path.ParsePath")
+{
+	static const struct
+	{
+		string_view Str;
+		root_type Type;
+		size_t DirOffset;
+		bool Root;
+	}
+	Tests[]
+	{
+		{ {},                                                              root_type::unknown,                 0,   false, },
+		{ L"1"sv,                                                          root_type::unknown,                 0,   false, },
+		{ L"\\"sv,                                                         root_type::unknown,                 0,   false, },
+		{ L"path\\file"sv,                                                 root_type::unknown,                 0,   false, },
+		{ L"A:"sv,                                                         root_type::drive_letter,            2,   true,  },
+		{ L"A:path"sv,                                                     root_type::drive_letter,            2,   false, },
+		{ L"B:\\"sv,                                                       root_type::drive_letter,            3,   true,  },
+		{ L"C:\\path"sv,                                                   root_type::drive_letter,            3,   false, },
+		{ L"CC:\\path"sv,                                                  root_type::unknown,                 0,   false, },
+		{ L"\\\\?\\A:"sv,                                                  root_type::win32nt_drive_letter,    6,   true,  },
+		{ L"\\\\?\\B:\\"sv,                                                root_type::win32nt_drive_letter,    7,   true,  },
+		{ L"\\\\?\\C:\\path"sv,                                            root_type::win32nt_drive_letter,    7,   false, },
+		{ L"\\\\?\\CC:\\path"sv,                                           root_type::unknown_rootlike,        8,   false, },
+		{ L"\\\\.\\A:"sv,                                                  root_type::win32nt_drive_letter,    6,   true,  },
+		{ L"\\\\.\\B:\\"sv,                                                root_type::win32nt_drive_letter,    7,   true,  },
+		{ L"\\\\.\\C:\\path"sv,                                            root_type::win32nt_drive_letter,    7,   false, },
+		{ L"\\\\.\\CC:\\path"sv,                                           root_type::unknown_rootlike,        8,   false, },
+		{ L"\\??\\A:"sv,                                                   root_type::win32nt_drive_letter,    6,   true,  },
+		{ L"\\??\\B:\\"sv,                                                 root_type::win32nt_drive_letter,    7,   true,  },
+		{ L"\\??\\C:\\path"sv,                                             root_type::win32nt_drive_letter,    7,   false, },
+		{ L"\\??\\CC:\\path"sv,                                            root_type::unknown_rootlike,        8,   false, },
+		{ L"\\\\server\\share"sv,                                          root_type::remote,                 14,   true,  },
+		{ L"\\\\server\\share\\"sv,                                        root_type::remote,                 15,   true,  },
+		{ L"\\\\server\\share\\path"sv,                                    root_type::remote,                 15,   false, },
+		{ L"\\\\server"sv,                                                 root_type::unknown,                 0,   false, },
+		{ L"\\\\?\\UNC\\server\\share"sv,                                  root_type::unc_remote,             20,   true,  },
+		{ L"\\\\?\\UNC\\server\\share\\"sv,                                root_type::unc_remote,             21,   true,  },
+		{ L"\\\\?\\UNC\\server\\share\\path"sv,                            root_type::unc_remote,             21,   false, },
+		{ L"\\\\?\\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}"sv,        root_type::volume,                 48,   true,  },
+		{ L"\\\\?\\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}\\"sv,      root_type::volume,                 49,   true,  },
+		{ L"\\\\?\\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}\\path"sv,  root_type::volume,                 49,   false, },
+		{ L"\\\\?\\Volume{01234567-89AB-CDEF-0123-456789ABCDEZ}\\path"sv,  root_type::unknown_rootlike,       49,   false, },
+		{ L"\\\\?\\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}_\\"sv,     root_type::unknown_rootlike,       50,   true,  },
+		{ L"\\\\?\\pipe"sv,                                                root_type::pipe,                    8,   true,  },
+		{ L"\\\\?\\pipe\\"sv,                                              root_type::pipe,                    9,   true,  },
+		{ L"\\\\?\\pipe\\path"sv,                                          root_type::pipe,                    9,   false, },
+		{ L"\\\\?\\pepe\\path"sv,                                          root_type::unknown_rootlike,        9,   false, },
+		{ L"\\\\?\\pipe_\\"sv,                                             root_type::unknown_rootlike,       10,   true,  },
+		{ L"\\\\?\\storage#volume#_??_usbstor#disk&ven_usb&prod_flash_disk&rev_1100#6&295c6d19&0#{53f56307-b6bf-11d0-94f2-00a0c91efb8b}#{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}\\"sv, root_type::unknown_rootlike, 160, true, },
+	};
+
+	for (const auto& i: Tests)
+	{
+		size_t DirOffset{};
+		bool Root{};
+		REQUIRE(ParsePath(i.Str, &DirOffset, &Root) == i.Type);
+		REQUIRE(DirOffset == i.DirOffset);
+		REQUIRE(Root == i.Root);
+	}
+}
+
+TEST_CASE("path.PathStartsWith")
+{
+	static const struct
+	{
+		bool Result;
+		string_view Path, Prefix;
+	}
+	Tests[]
+	{
+		{ true,  {},                    {}                },
+		{ false, {},                    L"Q"sv            },
+		{ true,  L"\\"sv,               {}                },
+		{ false, L"C:\\path\\file"sv,   {}                },
+		{ true,  L"C:\\path\\file"sv,   L"C:\\path"sv     },
+		{ true,  L"C:\\path\\file"sv,   L"C:\\path\\"sv   },
+		{ false, L"C:\\path\\file"sv,   L"C:\\pat"sv      },
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == PathStartsWith(i.Path, i.Prefix));
+	}
+}
+
+TEST_CASE("path.CutToParent")
+{
+	static const string_view TestRoots[]
+	{
+		{},
+		L"C:"sv,
+		L"C:\\"sv,
+		L"\\\\server\\share\\"sv,
+		L"\\\\?\\C:\\"sv,
+		L"\\\\?\\UNC\\server\\share\\"sv,
+		L"\\\\?\\Volume{f26b206c-f912-11e1-b516-806e6f6e6963}\\"sv,
+		L"\\\\?\\pipe\\"sv,
+		L"\\\\?\\pineapple#pizza\\"sv,
 	};
 
 	static const struct
 	{
-		const wchar_t* InputPath;
-		const wchar_t* ExpectedPath;
+		const string_view InputPath;
+		const string_view ExpectedPath;
 		bool RootMustExist;
 		bool ExpectedResult;
 	}
-	TestCases[] =
+	TestCases[]
 	{
 		// root directory, shall fail
-		{ L"{0}", L"{0}", false, false},
+		{ L"{0}"sv,                  L"{0}"sv,        false, false},
 
 		// one level, shall return root directory
-		{ L"{0}dir1", L"{0}", true, true },
+		{ L"{0}dir1"sv,              L"{0}"sv,        true,  true },
 
 		// one level without root, shall fail
-		{ L"dir1", L"dir1", false, false },
+		{ L"dir1"sv,                 L"dir1"sv,       false, false },
 
 		// two levels, shall return first level
-		{ L"{0}dir1\\dir2", L"{0}dir1", false, true },
+		{ L"{0}dir1\\dir2"sv,        L"{0}dir1"sv,    false, true },
 
 		// two levels with trailing slash, shall return first level
-		{ L"{0}dir1\\dir2\\", L"{0}dir1", false, true },
+		{ L"{0}dir1\\dir2\\"sv,      L"{0}dir1"sv,    false, true },
 	};
 
-	string Path, Baseline;
 	for (const auto& Root: TestRoots)
 	{
 		for (const auto& Test: TestCases)
 		{
-			if (!*Root && Test.RootMustExist)
+			if (Root.empty() && Test.RootMustExist)
 				continue;
 
-			Path = format(Test.InputPath, Root);
-			Baseline = format(Test.ExpectedPath, Root);
+			const auto Baseline = format(Test.ExpectedPath, Root);
+			auto Path = format(Test.InputPath, Root);
 
-			const auto Result = CutToParent(Path);
-			assert(Result == Test.ExpectedResult);
-			assert(Path == Baseline);
+			REQUIRE(Test.ExpectedResult == CutToParent(Path));
+			REQUIRE(Baseline == Path);
 		}
 	}
-#endif
 }
+
+TEST_CASE("path.AddEndSlash")
+{
+	static const struct
+	{
+		string_view Input, Result;
+	}
+	Tests[]
+	{
+		{ {},              L"\\"sv },
+		{ L"\\"sv,         L"\\"sv },
+		{ L"/"sv,          L"/"sv },
+		{ L"a"sv,          L"a\\"sv },
+		{ L"a\\"sv,        L"a\\"sv },
+		{ L"a\\\\"sv,      L"a\\\\"sv },
+		{ L"a\\b/"sv,      L"a\\b\\"sv },
+		{ L"a\\b/c/d"sv,   L"a\\b/c/d/"sv },
+	};
+
+	for (const auto& i: Tests)
+	{
+		string Str(i.Input);
+		AddEndSlash(Str);
+		REQUIRE(Str == i.Result);
+
+		wchar_t Buffer[64];
+		REQUIRE(i.Input.size() < std::size(Buffer));
+		*copy_string(i.Input, Buffer) = {};
+		AddEndSlash(Buffer);
+		REQUIRE(Buffer == i.Result);
+	}
+}
+
+TEST_CASE("path.DeleteEndSlash")
+{
+	static const struct
+	{
+		string_view Input, Result;
+	}
+	Tests[]
+	{
+		{ {},              {} },
+		{ L"\\"sv,         {} },
+		{ L"/"sv,          {} },
+		{ L"a"sv,          L"a"sv },
+		{ L"a\\"sv,        L"a"sv },
+		{ L"a\\\\"sv,      L"a"sv },
+		{ L"a\\b/"sv,      L"a\\b"sv },
+		{ L"a\\b/c/d"sv,   L"a\\b/c/d"sv },
+	};
+
+	for (const auto& i : Tests)
+	{
+		string Str(i.Input);
+		DeleteEndSlash(Str);
+		REQUIRE(Str == i.Result);
+
+		wchar_t Buffer[64];
+		REQUIRE(i.Input.size() < std::size(Buffer));
+		*copy_string(i.Input, Buffer) = {};
+		DeleteEndSlash(Buffer);
+		REQUIRE(Buffer == i.Result);
+	}
+}
+#endif

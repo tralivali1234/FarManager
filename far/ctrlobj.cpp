@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "ctrlobj.hpp"
+
+// Internal:
 #include "manager.hpp"
 #include "cmdline.hpp"
 #include "hilight.hpp"
@@ -51,6 +51,16 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "poscache.hpp"
 #include "plugins.hpp"
 #include "scrbuf.hpp"
+#include "global.hpp"
+#include "farversion.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 ControlObject::ControlObject()
 {
@@ -58,9 +68,9 @@ ControlObject::ControlObject()
 
 	SetColor(COL_COMMANDLINEUSERSCREEN);
 	GotoXY(0, ScrY - 3);
-	ShowCopyright();
+	ShowVersion(false);
 	GotoXY(0, ScrY - 2);
-	MoveCursor(0, ScrY - 1);
+	MoveCursor({ 0, ScrY - 1 });
 
 	Global->WindowManager->InitDesktop();
 
@@ -89,6 +99,7 @@ void ControlObject::Init(int DirCount)
 	Global->WindowManager->PluginCommit();
 	Plugins->LoadPlugins();
 	Global->ScrBuf->SetTitle(strOldTitle);
+	Macro.LoadMacros(true);
 
 	FPanels->LeftPanel()->Update(0);
 	FPanels->RightPanel()->Update(0);
@@ -97,9 +108,10 @@ void ControlObject::Init(int DirCount)
 
 	FarChDir(FPanels->ActivePanel()->GetCurDir());
 
-	Macro.LoadMacros(true);
-	FPanels->LeftPanel()->SetCustomSortMode(Global->Opt->LeftPanel.SortMode, SO_KEEPCURRENT);
-	FPanels->RightPanel()->SetCustomSortMode(Global->Opt->RightPanel.SortMode, SO_KEEPCURRENT);
+	// BUGBUG
+	FPanels->LeftPanel()->SetCustomSortMode(panel_sort(Global->Opt->LeftPanel.SortMode.Get()), sort_order::keep, false);
+	FPanels->RightPanel()->SetCustomSortMode(panel_sort(Global->Opt->RightPanel.SortMode.Get()), sort_order::keep, false);
+
 	Global->WindowManager->SwitchToPanels();  // otherwise panels are empty
 }
 
@@ -137,27 +149,27 @@ ControlObject::~ControlObject()
 }
 
 
-void ControlObject::ShowCopyright(DWORD Flags)
+void ControlObject::ShowVersion(bool const Direct)
 {
-	if (Flags&1)
+	if (Direct)
 	{
-		std::wcout << Global->Version() << L'\n' << Global->Copyright() << std::endl;
+		std::wcout << build::version_string() << L'\n' << build::copyright() << L'\n' << std::endl;
+		return;
 	}
-	else
-	{
-		COORD Size, CursorPosition;
-		Console().GetSize(Size);
-		Console().GetCursorPosition(CursorPosition);
-		int FreeSpace=Size.Y-CursorPosition.Y-1;
 
-		if (FreeSpace<5)
-			ScrollScreen(5-FreeSpace);
+	COORD Size;
+	console.GetSize(Size);
+	COORD CursorPosition;
+	console.GetCursorPosition(CursorPosition);
+	const auto FreeSpace = Size.Y - CursorPosition.Y - 1;
 
-		GotoXY(0,ScrY-4);
-		Text(Global->Version());
-		GotoXY(0,ScrY-3);
-		Text(Global->Copyright());
-	}
+	if (FreeSpace < 5 && DoWeReallyHaveToScroll(5))
+		ScrollScreen(5-FreeSpace);
+
+	GotoXY(0,ScrY-4);
+	Text(build::version_string());
+	GotoXY(0,ScrY-3);
+	Text(build::copyright());
 }
 
 FilePanels* ControlObject::Cp() const

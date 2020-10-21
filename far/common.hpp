@@ -35,33 +35,6 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-// TODO: use separately where required
-
-#include "common/compiler.hpp"
-#include "common/preprocessor.hpp"
-#include "common/utility.hpp"
-#include "common/movable.hpp"
-#include "common/noncopyable.hpp"
-#include "common/rel_ops.hpp"
-#include "common/scope_exit.hpp"
-#include "common/type_traits.hpp"
-#include "common/function_traits.hpp"
-#include "common/smart_ptr.hpp"
-#include "common/any.hpp"
-#include "common/null_iterator.hpp"
-#include "common/enumerator.hpp"
-#include "common/range.hpp"
-#include "common/string_view.hpp"
-#include "common/algorithm.hpp"
-#include "common/monitored.hpp"
-#include "common/string_utils.hpp"
-#include "common/enum_substrings.hpp"
-#include "common/enum_tokens.hpp"
-#include "common/zip_view.hpp"
-#include "common/bytes_view.hpp"
-#include "common/singleton.hpp"
-#include "common/chrono.hpp"
-
 // TODO: clean up & split
 
 template <typename T>
@@ -89,89 +62,21 @@ auto EmptyToNull(const T* Str)
 	return (Str && !*Str)? nullptr : Str;
 }
 
+template<class T>
+auto EmptyToNull(const T& Str)
+{
+	return Str.empty()? nullptr : Str.c_str();
+}
+
 template <class T>
 T Round(const T &a, const T &b)
 {
 	return a / b + ((a % b * 2 > b)? 1 : 0);
 }
 
-inline void* ToPtr(intptr_t Value)
+inline void* ToPtr(intptr_t Value) noexcept
 {
 	return reinterpret_cast<void*>(Value);
-}
-
-template<class T, class Y>
-constexpr bool InRange(const T& from, const Y& what, const T& to)
-{
-	return from <= what && what <= to;
-}
-
-#ifdef _DEBUG
-#define SELF_TEST(code) \
-namespace \
-{ \
-	struct SelfTest \
-	{ \
-		SelfTest() \
-		{ \
-			code; \
-		} \
-	} _SelfTest; \
-}
-#else
-#define SELF_TEST(code)
-#endif
-
-#define SIGN_UNICODE    0xFEFF
-#define SIGN_REVERSEBOM 0xFFFE
-#define SIGN_UTF8       0xBFBBEF
-
-template<typename T>
-class base: public T
-{
-protected:
-	using T::T;
-	using base_type = base;
-};
-
-namespace io
-{
-	template<typename char_type>
-	class basic_streambuf_override
-	{
-	public:
-		NONCOPYABLE(basic_streambuf_override);
-
-		basic_streambuf_override(std::basic_ios<char_type>& Ios, std::basic_streambuf<char_type>& Buf) :
-			m_Ios(Ios),
-			m_OriginalBuffer(*Ios.rdbuf())
-		{
-			m_Ios.rdbuf(&Buf);
-		}
-
-		~basic_streambuf_override()
-		{
-			m_Ios.rdbuf(&m_OriginalBuffer);
-		}
-
-	private:
-		std::basic_ios<char_type>& m_Ios;
-		std::basic_streambuf<char_type>& m_OriginalBuffer;
-	};
-
-	using wstreambuf_override = basic_streambuf_override<wchar_t>;
-
-	template<typename container>
-	void write(std::ostream& Stream, const container& Container)
-	{
-		static_assert(std::is_trivially_copyable_v<VALUE_TYPE(Container)>);
-
-		const auto Size = std::size(Container);
-		if (!Size)
-			return;
-
-		Stream.write(static_cast<const char*>(static_cast<const void*>(std::data(Container))), Size * sizeof(*std::data(Container)));
-	}
 }
 
 #endif // COMMON_HPP_1BD5AB87_3379_4AFE_9F63_DB850DCF72B4

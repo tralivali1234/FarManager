@@ -30,10 +30,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "desktop.hpp"
+
+// Internal:
 #include "global.hpp"
 #include "manager.hpp"
 #include "savescr.hpp"
@@ -42,10 +42,18 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "keys.hpp"
 #include "help.hpp"
 
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
 desktop::desktop(private_tag)
 {
 	SetCanLoseFocus(true);
-	desktop::SetPosition(0, 0, ScrX, ScrY);
+	desktop::SetPosition({ 0, 0, ScrX, ScrY });
 	SetMacroMode(MACROAREA_DESKTOP);
 }
 
@@ -57,7 +65,7 @@ desktop_ptr desktop::create()
 void desktop::ResizeConsole()
 {
 	m_Background->Resize(ScrX + 1, ScrY + 1, Global->Opt->WindowMode != 0);
-	SetPosition(0, 0, ScrX, ScrY);
+	SetPosition({ 0, 0, ScrX, ScrY });
 }
 
 void desktop::DisplayObject()
@@ -70,9 +78,7 @@ bool desktop::ProcessKey(const Manager::Key& Key)
 	switch (Key())
 	{
 	case KEY_F1:
-		{
-			Help::create(L"Contents");
-		}
+		help::show(L"Contents"sv);
 		break;
 
 	case KEY_SHIFTF9:
@@ -89,7 +95,7 @@ bool desktop::ProcessKey(const Manager::Key& Key)
 void desktop::TakeSnapshot()
 {
 	if (!m_Background)
-		m_Background = std::make_unique<SaveScreen>(0, 0, ScrX, ScrY);
+		m_Background = std::make_unique<SaveScreen>(rectangle{ 0, 0, ScrX, ScrY });
 	else
 		m_Background->SaveArea();
 }

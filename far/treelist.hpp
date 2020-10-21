@@ -35,7 +35,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "panel.hpp"
+
+// Platform:
+#include "platform.fwd.hpp"
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 enum
 {
@@ -77,59 +87,61 @@ public:
 
 	static tree_panel_ptr create(window_ptr Owner, int ModalMode = 0);
 	TreeList(private_tag, window_ptr Owner, int ModalMode);
-	virtual ~TreeList() override;
+	~TreeList() override;
 
-	virtual bool ProcessKey(const Manager::Key& Key) override;
-	virtual bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
-	virtual bool GoToFile(const string_view& Name, bool OnlyPartName = false) override;
-	virtual bool FindPartName(const string& Name, int Next, int Direct = 1) override;
-	virtual void Update(int Mode) override;
-	virtual const string& GetCurDir() const override;
+	bool ProcessKey(const Manager::Key& Key) override;
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	bool GoToFile(string_view Name, bool OnlyPartName = false) override;
+	bool FindPartName(string_view Name, int Next, int Direct = 1) override;
+	void Update(int Mode) override;
+	const string& GetCurDir() const override;
 
-	void SetRootDir(const string& NewRootDir);
+	void SetRootDir(string_view NewRootDir);
 	void ProcessEnter();
 	int GetExitCode() const { return m_ExitCode; }
 	const TreeItem* GetItem(size_t Index) const;
 
-	static void AddTreeName(const string_view& Name);
-	static void DelTreeName(const string_view& Name);
-	static void RenTreeName(const string& SrcName, const string& DestName);
-	static void ReadSubTree(const string& Path);
+	static void AddTreeName(string_view Name);
+	static void DelTreeName(string_view Name);
+	static void RenTreeName(string_view SrcName, string_view DestName);
+	static void ReadSubTree(string_view Path);
 	static void ClearCache();
-	static void ReadCache(const string& TreeRoot);
+	static void ReadCache(string_view TreeRoot);
 	static void FlushCache();
 
 private:
-	virtual long long VMProcess(int OpCode, void* vParam = nullptr, long long iParam = 0) override;
-	virtual bool SetCurDir(const string& NewDir, bool ClosePanel, bool IsUpdated = true) override;
-	virtual bool GetCurName(string &strName, string &strShortName) const override;
-	virtual void UpdateViewPanel() override;
-	virtual void MoveToMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
-	virtual bool GetPlainString(string& Dest, int ListPos) const override;
-	virtual bool GoToFile(long idxItem) override;
-	virtual long FindFile(const string_view& Name, bool OnlyPartName = false) override;
-	virtual long FindFirst(const string& Name) override;
-	virtual long FindNext(int StartPos, const string& Name) override;
-	virtual size_t GetFileCount() const override { return m_ListData.size(); }
-	virtual bool GetFileName(string &strName, int Pos, DWORD &FileAttr) const override;
-	virtual void RefreshTitle() override;
-	virtual string GetTitle() const override;
-	virtual void OnFocusChange(bool Get) override;
-	virtual void UpdateKeyBar() override;
-	virtual int GetCurrentPos() const override;
-	virtual bool GetSelName(string *strName, DWORD &FileAttr, string *ShortName = nullptr, os::fs::find_data *fd = nullptr) override;
-	virtual void DisplayObject() override;
-	virtual size_t GetSelCount() const override;
+	long long VMProcess(int OpCode, void* vParam = nullptr, long long iParam = 0) override;
+	bool SetCurDir(string_view NewDir, bool ClosePanel, bool IsUpdated = true, bool Silent = false) override;
+	bool GetCurName(string &strName, string &strShortName) const override;
+	void UpdateViewPanel() override;
+	void MoveToMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	bool GetPlainString(string& Dest, int ListPos) const override;
+	bool GoToFile(long idxItem) override;
+	long FindFile(string_view Name, bool OnlyPartName = false) override;
+	long FindFirst(string_view Name) override;
+	long FindNext(int StartPos, string_view Name) override;
+	size_t GetFileCount() const override { return m_ListData.size(); }
+	bool GetFileName(string &strName, int Pos, DWORD &FileAttr) const override;
+	void RefreshTitle() override;
+	string GetTitle() const override;
+	void OnFocusChange(bool Get) override;
+	void UpdateKeyBar() override;
+	int GetCurrentPos() const override;
+	bool GetSelName(string *Name, string *ShortName = nullptr, os::fs::find_data *fd = nullptr) override;
+	void DisplayObject() override;
+	size_t GetSelCount() const override;
 
 	bool ReadTree();
 	void DisplayTree(bool Fast);
-	void DisplayTreeName(const string_view& Name, size_t Pos) const;
+	void DisplayTreeName(string_view Name, size_t Pos) const;
+	void ToBegin();
+	void ToEnd();
 	void Up(int Count);
 	void Down(int Count);
 	void Scroll(int Count);
 	void CorrectPosition();
 	bool FillLastData();
-	bool SetDirPosition(const string& NewDir);
+	bool SetDirPosition(string_view NewDir);
 	void GetRoot();
 	panel_ptr GetRootPanel();
 	void SyncDir();

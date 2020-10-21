@@ -30,10 +30,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "vmenu2.hpp"
+
+// Internal:
 #include "vmenu.hpp"
 #include "keyboard.hpp"
 #include "keys.hpp"
@@ -43,6 +43,16 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "interf.hpp"
 #include "syslog.hpp"
 #include "strmix.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+#include "common/view/enumerate.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 void VMenu2::Pack()
 {
@@ -71,11 +81,8 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 	switch(Msg)
 	{
 	case DN_CTLCOLORDIALOG:
-		{
-			FarColor *color=(FarColor*)Param2;
-			*color=colors::PaletteColorToFarColor(COL_MENUBOX);
-			return true;
-		}
+		*static_cast<FarColor*>(Param2) = colors::PaletteColorToFarColor(COL_MENUBOX);
+		return true;
 
 	case DN_CTLCOLORDLGLIST:
 		{
@@ -106,7 +113,7 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 	case DN_CLOSE:
 		if(!ForceClosing && !Param1 && GetItemFlags() & (LIF_GRAYED|LIF_DISABLE))
 			return false;
-		if(Call(Msg, (void*)(Param1<0 ? Param1 : GetSelectPos())))
+		if(Call(Msg, reinterpret_cast<void*>(Param1 < 0? Param1 : GetSelectPos())))
 			return false;
 		break;
 
@@ -129,8 +136,7 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 	case DN_INPUT:
 		if (static_cast<INPUT_RECORD*>(Param2)->EventType==KEY_EVENT)
 			break;
-		// fallthrough
-
+		[[fallthrough]];
 	case DN_CONTROLINPUT:
 		if(!cancel)
 		{
@@ -145,6 +151,9 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 		break;
 
 	case DN_LISTCHANGE:
+		if (Dlg->CheckDialogMode(DMODE_ISMENU))
+			break;
+		[[fallthrough]];
 	case DN_ENTERIDLE:
 		if(!cancel)
 		{
@@ -157,7 +166,7 @@ intptr_t VMenu2::VMenu2DlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void*
 		if(!cancel)
 		{
 			INPUT_RECORD ReadRec={WINDOW_BUFFER_SIZE_EVENT};
-			ReadRec.Event.WindowBufferSizeEvent.dwSize=*(COORD*)Param2;
+			ReadRec.Event.WindowBufferSizeEvent.dwSize = *static_cast<COORD*>(Param2);
 			if(Call(DN_INPUT, &ReadRec))
 				return false;
 			else
@@ -184,13 +193,13 @@ int VMenu2::Call(int Msg, void *param)
 		return 0;
 
 	++InsideCall;
-	int r=mfn(Msg, param);
+	const auto r = mfn(Msg, param);
 
 	bool Visible;
 	DWORD Size;
-	SHORT X, Y;
+
 	GetCursorType(Visible, Size);
-	GetCursorPos(X, Y);
+	const auto CursorPos = GetCursorPos();
 
 	--InsideCall;
 
@@ -199,7 +208,7 @@ int VMenu2::Call(int Msg, void *param)
 
 
 	SetCursorType(Visible, Size);
-	MoveCursor(X, Y);
+	MoveCursor(CursorPos);
 
 	if(InsideCall==0 && ListBox().UpdateRequired())
 		SendMessage(DM_REDRAW, 0, nullptr);
@@ -231,7 +240,7 @@ void VMenu2::Resize(bool force)
 
 	int X1 = m_X1;
 	int Y1 = m_Y1;
-	if(!ShortBox)
+	if(m_BoxType == box_type::full)
 	{
 		if(X1>1)
 			X1-=2;
@@ -240,7 +249,7 @@ void VMenu2::Resize(bool force)
 	}
 
 
-	int width=info.MaxLength+(ShortBox?2:6) + 3;
+	int width = info.MaxLength + (m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 2 : 6) + 3;
 	if(m_X2>0)
 		width=m_X2-X1+1;
 
@@ -252,14 +261,13 @@ void VMenu2::Resize(bool force)
 	if(MaxHeight && height>MaxHeight)
 		height=MaxHeight;
 
-	height+=ShortBox?2:4;
+	height += m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 2 : 4;
 	if(m_Y2>0)
 		height=m_Y2-Y1+1;
 
-
 	int mh=Y1<0 ? ScrY : ScrY-Y1;
 
-	mh+=ShortBox ? 1 : 2;
+	mh += m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 1 : 2;
 
 	if(mh<0)
 		mh=0;
@@ -267,7 +275,7 @@ void VMenu2::Resize(bool force)
 	{
 		if(m_Y2<=0 && Y1>=ScrY/2)
 		{
-			Y1+=ShortBox?1:3;
+			Y1 += m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 1 : 3;
 			if(height>Y1)
 				height=Y1;
 			Y1-=height;
@@ -287,19 +295,19 @@ void VMenu2::Resize(bool force)
 	SendMessage(DM_RESIZEDIALOG, true, &size);
 
 	SMALL_RECT ipos;
-	if(ShortBox)
+	if (m_BoxType == box_type::full)
 	{
-		ipos.Left=0;
-		ipos.Top=0;
-		ipos.Right=width-1;
-		ipos.Bottom=height-1;
+		ipos.Left = 2;
+		ipos.Top = 1;
+		ipos.Right = width - 3;
+		ipos.Bottom = height - 2;
 	}
 	else
 	{
-		ipos.Left=2;
-		ipos.Top=1;
-		ipos.Right=width-3;
-		ipos.Bottom=height-2;
+		ipos.Left = 0;
+		ipos.Top = 0;
+		ipos.Right = width - 1;
+		ipos.Bottom = height - 1;
 	}
 	SendMessage(DM_SETITEMPOSITION, 0, &ipos);
 
@@ -330,32 +338,31 @@ string VMenu2::GetMenuTitle(bool bottom)
 	{
 		size=titles.BottomSize;
 		title.reset(size);
-		titles.Bottom = title.get();
+		titles.Bottom = title.data();
 	}
 	else
 	{
 		size=titles.TitleSize;
 		title.reset(size);
-		titles.Title = title.get();
+		titles.Title = title.data();
 	}
 	SendMessage(DM_LISTGETTITLES, 0, &titles);
-	return string(title.get(), size - 1);
+	return { title.data(), size - 1 };
 }
 
-static const std::array<FarDialogItem, 1> VMenu2DialogItems =
-{{
-	{DI_LISTBOX, 2, 1, 10, 10, 0, nullptr, nullptr, DIF_LISTNOAMPERSAND/*|DIF_LISTNOCLOSE*/, nullptr},
-}};
+static const FarDialogItem VMenu2DialogItems[]
+{
+	{ DI_LISTBOX, 2, 1, 10, 10, {}, {}, {}, DIF_LISTNOAMPERSAND/* | DIF_LISTNOCLOSE*/, {} },
+};
 
 VMenu2::VMenu2(private_tag, int MaxHeight):
-	Dialog(Dialog::private_tag(), VMenu2DialogItems, [this](Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2) { return VMenu2DlgProc(Dlg, Msg, Param1, Param2); }, nullptr),
+	Dialog(Dialog::private_tag(), span(VMenu2DialogItems), [this](Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2) { return VMenu2DlgProc(Dlg, Msg, Param1, Param2); }, nullptr),
 	MaxHeight(MaxHeight),
 	cancel(0),
 	m_X1(-1),
 	m_Y1(-1),
 	m_X2(0),
 	m_Y2(0),
-	ShortBox(false),
 	DefRec(),
 	InsideCall(0),
 	NeedResize(false),
@@ -364,7 +371,7 @@ VMenu2::VMenu2(private_tag, int MaxHeight):
 {
 }
 
-vmenu2_ptr VMenu2::create(const string& Title, const MenuDataEx *Data, size_t ItemCount, int MaxHeight, DWORD Flags)
+vmenu2_ptr VMenu2::create(const string& Title, span<const menu_item> const Data, int MaxHeight, DWORD Flags)
 {
 	auto VMenu2Ptr = std::make_shared<VMenu2>(private_tag(), MaxHeight);
 
@@ -376,18 +383,19 @@ vmenu2_ptr VMenu2::create(const string& Title, const MenuDataEx *Data, size_t It
 	VMenu2Ptr->SetTitle(Title);
 	VMenu2Ptr->SendMessage(DM_SETINPUTNOTIFY, 1, nullptr);
 
-	std::vector<FarListItem> fli(ItemCount);
-	std::transform(Data, Data + ItemCount, fli.begin(), [](const auto& i) { return FarListItem{i.Flags, i.Name}; });
+	std::vector<FarListItem> fli;
+	fli.reserve(Data.size());
+	std::transform(ALL_CONST_RANGE(Data), std::back_inserter(fli), [](const auto& i) { return FarListItem{ i.Flags, i.Name.c_str() }; });
 
-	FarList fl={sizeof(FarList), ItemCount, fli.data()};
+	FarList fl = { sizeof(FarList), fli.size(), fli.data() };
 
 	VMenu2Ptr->SendMessage(DM_LISTSET, 0, &fl);
 
-	for(size_t i=0; i<ItemCount; ++i)
-		VMenu2Ptr->at(i).AccelKey = Data[i].AccelKey;
+	for (const auto& [Item, Index]: enumerate(Data))
+		VMenu2Ptr->at(Index).AccelKey = Item.AccelKey;
 
 	// BUGBUG
-	VMenu2Ptr->Dialog::SetPosition(-1, -1, 20, 20);
+	VMenu2Ptr->Dialog::SetPosition({ -1, -1, 20, 20 });
 	VMenu2Ptr->SetMenuFlags(Flags | VMENU_MOUSEREACTION);
 	VMenu2Ptr->Resize();
 	return VMenu2Ptr;
@@ -396,18 +404,18 @@ vmenu2_ptr VMenu2::create(const string& Title, const MenuDataEx *Data, size_t It
 void VMenu2::SetTitle(const string& Title)
 {
 	FarListTitles titles={sizeof(FarListTitles)};
-	string t=GetMenuTitle(true);
-	titles.Bottom=t.data();
-	titles.Title=Title.data();
+	const auto t = GetMenuTitle(true);
+	titles.Bottom=t.c_str();
+	titles.Title=Title.c_str();
 	SendMessage(DM_LISTSETTITLES, 0, &titles);
 }
 
 void VMenu2::SetBottomTitle(const string& Title)
 {
 	FarListTitles titles={sizeof(FarListTitles)};
-	string t=GetMenuTitle();
-	titles.Bottom=Title.data();
-	titles.Title=t.data();
+	const auto t = GetMenuTitle();
+	titles.Bottom=Title.c_str();
+	titles.Title=t.c_str();
 	SendMessage(DM_LISTSETTITLES, 0, &titles);
 }
 
@@ -426,15 +434,17 @@ void VMenu2::SetMenuFlags(DWORD Flags)
 		fdi.Flags|=DIF_LISTAUTOHIGHLIGHT;
 	if(Flags&VMENU_SHOWNOBOX)
 		fdi.Flags|=DIF_LISTNOBOX;
+	if (Flags&VMENU_NOMERGEBORDER)
+		fdi.Flags|=DIF_LISTNOMERGEBORDER;
 
 	ListBox().SetMenuFlags(Flags & (VMENU_REVERSEHIGHLIGHT | VMENU_LISTSINGLEBOX));
 
 	SendMessage(DM_SETDLGITEMSHORT, 0, &fdi);
 }
 
-void VMenu2::AssignHighlights(int Reverse)
+void VMenu2::AssignHighlights(bool Reverse)
 {
-	SetMenuFlags(Reverse? VMENU_REVERSEHIGHLIGHT | VMENU_AUTOHIGHLIGHT : VMENU_AUTOHIGHLIGHT);
+	SetMenuFlags(VMENU_AUTOHIGHLIGHT | (Reverse? VMENU_REVERSEHIGHLIGHT : VMENU_NONE));
 }
 
 void VMenu2::clear()
@@ -455,19 +465,18 @@ int VMenu2::AddItem(const MenuItemEx& NewItem, int PosAdd)
 {
 	// BUGBUG
 
-	int n = static_cast<int>(size());
+	const auto n = static_cast<int>(size());
 	if(PosAdd<0)
 		PosAdd=0;
 	if(PosAdd>n)
 		PosAdd=n;
 
 
-	FarListItem fi={NewItem.Flags, NewItem.strName.data()};
-	FarListInsert fli={sizeof(FarListInsert), PosAdd, fi};
+	FarListInsert fli{ sizeof(FarListInsert), PosAdd, { NewItem.Flags, NewItem.Name.c_str(), NewItem.SimpleUserData } };
 	if(SendMessage(DM_LISTINSERT, 0, &fli)<0)
 		return -1;
 
-	ListBox().SetUserData(NewItem.UserData, PosAdd);
+	ListBox().SetComplexUserData(NewItem.ComplexUserData, PosAdd);
 
 	auto& Item = at(PosAdd);
 	Item.AccelKey=NewItem.AccelKey;
@@ -478,20 +487,20 @@ int VMenu2::AddItem(const MenuItemEx& NewItem, int PosAdd)
 }
 int VMenu2::AddItem(const FarList *NewItem)
 {
-	int r=SendMessage(DM_LISTADD, 0, const_cast<FarList*>(NewItem));
+	const auto r = SendMessage(DM_LISTADD, 0, const_cast<FarList*>(NewItem));
 	Resize();
 	return r;
 }
 int VMenu2::AddItem(const string& NewStrItem)
 {
-	int r=SendMessage(DM_LISTADDSTR, 0, UNSAFE_CSTR(NewStrItem));
+	const auto r = SendMessage(DM_LISTADDSTR, 0, UNSAFE_CSTR(NewStrItem));
 	Resize();
 	return r;
 }
 
 int VMenu2::FindItem(int StartIndex, const string& Pattern, unsigned long long Flags)
 {
-	FarListFind flf={sizeof(FarListFind), StartIndex, Pattern.data(), Flags};
+	FarListFind flf{sizeof(FarListFind), StartIndex, Pattern.c_str(), Flags};
 	return SendMessage(DM_LISTFINDSTRING, 0, &flf);
 }
 
@@ -518,30 +527,34 @@ int VMenu2::SetSelectPos(int Pos, int Direct)
 	return ListBox().SetSelectPos(Pos, Direct);
 }
 
-int VMenu2::GetCheck(int Position)
+wchar_t VMenu2::GetCheck(int Position)
 {
-	LISTITEMFLAGS Flags=GetItemFlags(Position);
+	const auto Flags = GetItemFlags(Position);
 
 	if ((Flags & LIF_SEPARATOR) || !(Flags & LIF_CHECKED))
 		return 0;
 
-	int Checked = Flags & 0xFFFF;
+	const auto Checked = Flags & std::numeric_limits<wchar_t>::max();
 
 	return Checked ? Checked : 1;
 }
 
-void VMenu2::SetCheck(int Check, int Position)
+void VMenu2::SetCheck(int Position)
 {
-	LISTITEMFLAGS Flags=GetItemFlags(Position);
-	if (Check)
-	{
-		Flags &= ~0xFFFF;
-		Flags|=((Check&0xFFFF)|LIF_CHECKED);
-	}
-	else
-		Flags&=~(0xFFFF|LIF_CHECKED);
+	const auto Flags = GetItemFlags(Position) & ~std::numeric_limits<wchar_t>::max();
+	UpdateItemFlags(Position, Flags | LIF_CHECKED);
+}
 
-	UpdateItemFlags(Position, Flags);
+void VMenu2::SetCustomCheck(wchar_t Char, int Position)
+{
+	const auto Flags = GetItemFlags(Position) & ~std::numeric_limits<wchar_t>::max();
+	UpdateItemFlags(Position, Flags | LIF_CHECKED | Char);
+}
+
+void VMenu2::ClearCheck(int Position)
+{
+	const auto Flags = GetItemFlags(Position) & ~std::numeric_limits<wchar_t>::max();
+	UpdateItemFlags(Position, Flags & ~LIF_CHECKED);
 }
 
 void VMenu2::UpdateItemFlags(int Pos, unsigned long long NewFlags)
@@ -556,15 +569,15 @@ void VMenu2::UpdateItemFlags(int Pos, unsigned long long NewFlags)
 	SendMessage(DM_LISTUPDATE, 0, &flu);
 }
 
-void VMenu2::SetPosition(int X1,int Y1,int X2,int Y2)
+void VMenu2::SetPosition(rectangle Where)
 {
-	if((X2>0 && X2<X1) || (Y2>0 && Y2<Y1))
+	if((Where.right > 0 && Where.right < Where.left) || (Where.bottom > 0 && Where.bottom < Where.top))
 		return;
 
-	m_X1=X1;
-	m_Y1=Y1;
-	m_X2=X2;
-	m_Y2=Y2;
+	m_X1 = Where.left;
+	m_Y1 = Where.top;
+	m_X2 = Where.right;
+	m_Y2 = Where.bottom;
 	Resize();
 }
 
@@ -612,9 +625,19 @@ void VMenu2::Close(int ExitCode, bool Force)
 	ForceClosing = Force;
 }
 
-any* VMenu2::GetUserData(int Position) const
+intptr_t VMenu2::GetSimpleUserData(int Position) const
 {
-	return ListBox().GetUserData(Position);
+	return ListBox().GetSimpleUserData(Position);
+}
+
+const std::any* VMenu2::GetComplexUserData(int Position) const
+{
+	return ListBox().GetComplexUserData(Position);
+}
+
+std::any* VMenu2::GetComplexUserData(int Position)
+{
+	return ListBox().GetComplexUserData(Position);
 }
 
 void VMenu2::Key(int key)
@@ -642,7 +665,7 @@ void VMenu2::SortItems(bool Reverse, int Offset)
 	ListBox().SortItems(Reverse, Offset);
 }
 
-void VMenu2::SortItems(const std::function<bool(const MenuItemEx&, const MenuItemEx&, SortItemParam&)>& Pred, bool Reverse, int Offset)
+void VMenu2::SortItems(function_ref<bool(const MenuItemEx&, const MenuItemEx&, SortItemParam&)> const Pred, bool Reverse, int Offset)
 {
 	ListBox().SortItems(Pred, Reverse, Offset);
 }
@@ -674,10 +697,7 @@ bool VMenu2::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 {
 	if (!IsMoving())
 	{
-		// BUGBUG
-		// m_X1, m_X2, m_Y1, m_Y2 hides the same members from base class, fix it ASAP
-		if (MouseEvent->dwMousePosition.X < Dialog::m_X1 || MouseEvent->dwMousePosition.Y < Dialog::m_Y1 ||
-			MouseEvent->dwMousePosition.X > Dialog::m_X2 || MouseEvent->dwMousePosition.Y > Dialog::m_Y2)
+		if (!m_Where.contains(MouseEvent->dwMousePosition))
 		{
 			if (MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED)
 				return ClickHandler(this, Global->Opt->VMenu.LBtnClick);
@@ -692,10 +712,39 @@ bool VMenu2::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 
 void VMenu2::SetBoxType(int BoxType)
 {
-	ShortBox=(BoxType==SHORT_SINGLE_BOX || BoxType==SHORT_DOUBLE_BOX || BoxType==NO_BOX);
-	if(BoxType==NO_BOX)
+	if (BoxType == NO_BOX)
+	{
+		m_BoxType = box_type::none;
 		SetMenuFlags(VMENU_SHOWNOBOX);
-	if(BoxType==SINGLE_BOX || BoxType==SHORT_SINGLE_BOX)
+	}
+	else if (BoxType == SHORT_SINGLE_BOX || BoxType == SHORT_DOUBLE_BOX)
+	{
+		m_BoxType = box_type::thin;
+	}
+	else
+	{
+		m_BoxType = box_type::full;
+	}
+
+	if (BoxType == SINGLE_BOX || BoxType == SHORT_SINGLE_BOX)
 		SetMenuFlags(VMENU_LISTSINGLEBOX);
+
 	Resize();
+}
+
+intptr_t VMenu2::SendMessage(intptr_t Msg,intptr_t Param1,void* Param2)
+{
+	switch (Msg)
+	{
+		case DM_RESIZEDIALOG:
+		{
+			const auto fixSize = [](SHORT& size, SHORT min) { size = (size < min) ? min : size; };
+			const auto MarginsX = (m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 1 : 3) * 2;
+			const auto MarginsY = (m_BoxType == box_type::none? 0 : m_BoxType == box_type::thin? 1 : 2) * 2;
+			fixSize(static_cast<COORD*>(Param2)->X, MarginsX + 1);
+			fixSize(static_cast<COORD*>(Param2)->Y, MarginsY + (GetShowItemCount()? 1 : 0));
+			break;
+		}
+	}
+	return Dialog::SendMessage(Msg,Param1,Param2);
 }

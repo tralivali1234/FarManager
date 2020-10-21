@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "shortcuts.hpp"
+
+// Internal:
 #include "keys.hpp"
 #include "vmenu.hpp"
 #include "vmenu2.hpp"
@@ -48,40 +48,57 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "FarDlgBuilder.hpp"
 #include "plugins.hpp"
 #include "configdb.hpp"
-#include "FarGuid.hpp"
-#include "DlgGuid.hpp"
+#include "uuids.far.hpp"
+#include "uuids.far.dialogs.hpp"
 #include "lang.hpp"
+#include "global.hpp"
+#include "keyboard.hpp"
+
+// Platform:
+#include "platform.env.hpp"
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/rel_ops.hpp"
+#include "common/string_utils.hpp"
+#include "common/uuid.hpp"
+#include "common/view/enumerate.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 static const auto
-	FolderShortcutsKey = L"Shortcuts"_sv,
-	FolderName = L"Shortcut"_sv,
-	NameName = L"Name"_sv,
-	PluginGuidName = L"PluginGuid"_sv,
-	PluginFileName = L"PluginFile"_sv,
-	PluginDataName = L"PluginData"_sv,
+	FolderShortcutsKey = L"Shortcuts"sv,
+	FolderName = L"Shortcut"sv,
+	NameName = L"Name"sv,
+	PluginUuidName = L"PluginGuid"sv,
+	PluginFileName = L"PluginFile"sv,
+	PluginDataName = L"PluginData"sv,
 
-	HelpFolderShortcuts = L"FolderShortcuts"_sv,
-	SeparatorToken = L"--"_sv;
+	HelpFolderShortcuts = L"FolderShortcuts"sv,
+	SeparatorToken = L"--"sv;
 
 class Shortcuts::shortcut: public data, public rel_ops<shortcut>
 {
 public:
 	shortcut() = default;
 
-	shortcut(string Name, string Folder, string PluginFile, string PluginData, const GUID& PluginGuid):
-		Name(std::move(Name))
+	shortcut(string_view const Name, string_view const Folder, string_view const PluginFile, string_view const PluginData, const UUID& PluginUuid):
+		Name(Name)
 	{
-		this->Folder = std::move(Folder);
-		this->PluginFile = std::move(PluginFile);
-		this->PluginData = std::move(PluginData);
-		this->PluginGuid = PluginGuid;
+		this->Folder = Folder;
+		this->PluginFile = PluginFile;
+		this->PluginData = PluginData;
+		this->PluginUuid = PluginUuid;
 	}
 
 	bool operator==(const shortcut& rhs) const
 	{
-		const auto& tie = [](const shortcut& s)
+		const auto tie = [](const shortcut& s)
 		{
-			return std::tie(s.Name, s.Folder, s.PluginGuid, s.PluginFile, s.PluginData);
+			return std::tie(s.Name, s.Folder, s.PluginUuid, s.PluginFile, s.PluginData);
 		};
 
 		return tie(*this) == tie(rhs);
@@ -95,7 +112,7 @@ Shortcuts::Shortcuts(size_t Index):
 {
 	const auto Cfg = ConfigProvider().CreateShortcutsConfig();
 
-	const auto Root = Cfg->FindByName(Cfg->root_key(), FolderShortcutsKey);
+	const auto Root = Cfg->FindByName(Cfg->root_key, FolderShortcutsKey);
 	if (!Root)
 		return;
 
@@ -111,15 +128,15 @@ Shortcuts::Shortcuts(size_t Index):
 		if (!Cfg->GetValue(Key, FolderName + sIndex, Item.Folder))
 			break;
 
-		Cfg->GetValue(Key, NameName + sIndex, Item.Name);
+		Item.Name = Cfg->GetValue<string>(Key, NameName + sIndex);
 
-		string PluginGuid;
-		Cfg->GetValue(Key, PluginGuidName + sIndex, PluginGuid);
-		if(!StrToGuid(PluginGuid, Item.PluginGuid))
-			Item.PluginGuid=FarGuid;
+		if (const auto Uuid = uuid::try_parse(Cfg->GetValue<string>(Key, PluginUuidName + sIndex)))
+			Item.PluginUuid = *Uuid;
+		else
+			Item.PluginUuid = FarUuid;
 
-		Cfg->GetValue(Key, PluginFileName + sIndex, Item.PluginFile);
-		Cfg->GetValue(Key, PluginDataName + sIndex, Item.PluginData);
+		Item.PluginFile = Cfg->GetValue<string>(Key, PluginFileName + sIndex);
+		Item.PluginData = Cfg->GetValue<string>(Key, PluginDataName + sIndex);
 
 		m_Items.emplace_back(std::move(Item));
 	}
@@ -132,32 +149,30 @@ Shortcuts::~Shortcuts()
 
 void Shortcuts::Save()
 {
-	if (!*m_Changed)
+	if (!m_Changed)
 		return;
 
 	const auto Cfg = ConfigProvider().CreateShortcutsConfig();
-	auto Root = Cfg->FindByName(Cfg->root_key(), FolderShortcutsKey);
-	if (!Root)
-		Root = Cfg->CreateKey(Cfg->root_key(), FolderShortcutsKey);
 
-	auto Key = Cfg->FindByName(Root, m_KeyName);
-	if (Key)
+	SCOPED_ACTION(auto)(Cfg->ScopedTransaction());
+
+	const auto Root = Cfg->CreateKey(Cfg->root_key, FolderShortcutsKey);
+
+	if (const auto Key = Cfg->FindByName(Root, m_KeyName))
 		Cfg->DeleteKeyTree(Key);
 
-	Key = Cfg->CreateKey(Root, m_KeyName);
-	if (!Key)
-		return;
+	const auto Key = Cfg->CreateKey(Root, m_KeyName);
 
-	for_each_cnt(CONST_RANGE(m_Items, Item, size_t Index)
+	for (const auto& [Item, Index]: enumerate(m_Items))
 	{
 		const auto sIndex = str(Index);
 
 		Cfg->SetValue(Key, FolderName + sIndex, Item.Folder);
 		Cfg->SetValue(Key, NameName + sIndex, Item.Name);
 
-		if(Item.PluginGuid != FarGuid)
+		if(Item.PluginUuid != FarUuid)
 		{
-			Cfg->SetValue(Key, PluginGuidName + sIndex, GuidToStr(Item.PluginGuid));
+			Cfg->SetValue(Key, PluginUuidName + sIndex, uuid::str(Item.PluginUuid));
 		}
 
 		if(!Item.PluginFile.empty())
@@ -169,7 +184,7 @@ void Shortcuts::Save()
 		{
 			Cfg->SetValue(Key, PluginDataName + sIndex, Item.PluginData);
 		}
-	});
+	}
 }
 
 static string MakeName(const Shortcuts::shortcut& Item)
@@ -179,54 +194,57 @@ static string MakeName(const Shortcuts::shortcut& Item)
 		return os::env::expand(Item.Name);
 	}
 
-	if (Item.PluginGuid == FarGuid)
+	if (Item.PluginUuid == FarUuid)
 	{
-		return !Item.Folder.empty()? os::env::expand(Item.Folder) : msg(lng::MShortcutNone);
+		return !Item.Folder.empty()? escape_ampersands(os::env::expand(Item.Folder)) : msg(lng::MShortcutNone);
 	}
 
-	const auto plugin = Global->CtrlObject->Plugins->FindPlugin(Item.PluginGuid);
+	const auto plugin = Global->CtrlObject->Plugins->FindPlugin(Item.PluginUuid);
 	if (!plugin)
-		return GuidToStr(Item.PluginGuid);
+		return uuid::str(Item.PluginUuid);
 
 	string TechInfo;
 
 	if (!Item.PluginFile.empty())
-		append(TechInfo, msg(lng::MFSShortcutPluginFile), L' ', Item.PluginFile, L", "_sv);
+		append(TechInfo, msg(lng::MFSShortcutPluginFile), L' ', Item.PluginFile, L", "sv);
 
 	if (!Item.Folder.empty())
-		append(TechInfo, msg(lng::MFSShortcutPath), L' ', Item.Folder, L", "_sv);
+		append(TechInfo, msg(lng::MFSShortcutPath), L' ', Item.Folder, L", "sv);
 
 	if (!Item.PluginData.empty())
 	{
 		const string PrintablePluginData(Item.PluginData.cbegin(), std::find_if(ALL_CONST_RANGE(Item.PluginData), [](const auto i) { return i < L' '; }));
 		if (!PrintablePluginData.empty())
-			append(TechInfo, msg(lng::MFSShortcutPluginData), L' ', PrintablePluginData, L", "_sv);
+			append(TechInfo, msg(lng::MFSShortcutPluginData), L' ', PrintablePluginData, L", "sv);
 	}
 
-	return plugin->GetTitle() + (TechInfo.empty()? TechInfo : concat(L" ("_sv, string_view(TechInfo).substr(0, TechInfo.size() - 2), L')'));
+	return escape_ampersands(plugin->Title() + (TechInfo.empty()? TechInfo : concat(L" ("sv, string_view(TechInfo).substr(0, TechInfo.size() - 2), L')')));
 }
 
-static void FillMenu(VMenu2& Menu, std::list<Shortcuts::shortcut>& List, bool raw_mode)
+static void FillMenu(VMenu2& Menu, std::list<Shortcuts::shortcut>& List, bool const raw_mode)
 {
+	// Don't listen to static analysers - List MUST NOT be const. We store non-const iterators in type-erased UserData for further usage.
+	static_assert(!std::is_const_v<std::remove_reference_t<decltype(List)>>);
+
 	Menu.clear();
 	FOR_RANGE(List, i)
 	{
 		MenuItemEx ListItem(MakeName(*i));
-		if (ListItem.strName.empty())
+		if (ListItem.Name.empty())
 			continue;
 
-		ListItem.UserData = i;
-		if (!raw_mode && i->PluginGuid == FarGuid && i->Folder.empty())
+		ListItem.ComplexUserData = i;
+		if (!raw_mode && i->PluginUuid == FarUuid && i->Folder.empty())
 		{
-			if (ListItem.strName != SeparatorToken)
+			if (ListItem.Name != SeparatorToken)
 			{
 				if (Menu.empty())
-					Menu.SetTitle(ListItem.strName);
+					Menu.SetTitle(ListItem.Name);
 
 				continue;
 			}
 
-			ListItem.strName.clear();
+			ListItem.Name.clear();
 			ListItem.Flags = LIF_SEPARATOR;
 		}
 		Menu.AddItem(ListItem);
@@ -255,7 +273,7 @@ static auto CreateShortcutFromPanel()
 	{
 		OpenPanelInfo Info{};
 		ActivePanel->GetOpenPanelInfo(&Info);
-		Shortcut.PluginGuid = ActivePanel->GetPluginHandle()->plugin()->GetGUID();
+		Shortcut.PluginUuid = ActivePanel->GetPluginHandle()->plugin()->Id();
 		Shortcut.PluginFile = NullToEmpty(Info.HostFile);
 		Shortcut.PluginData = NullToEmpty(Info.ShortcutData);
 	}
@@ -268,17 +286,17 @@ static bool EditItemImpl(Shortcuts::shortcut& Item, bool raw)
 
 	DialogBuilder Builder(lng::MFolderShortcutsTitle, HelpFolderShortcuts);
 	Builder.AddText(lng::MFSShortcutName);
-	Builder.AddEditField(NewItem.Name, 50, L"FS_Name", DIF_EDITPATH);
+	Builder.AddEditField(NewItem.Name, 50, L"FS_Name"sv, DIF_EDITPATH);
 	Builder.AddText(lng::MFSShortcutPath);
-	Builder.AddEditField(NewItem.Folder, 50, L"FS_Path", DIF_EDITPATH);
-	if (Item.PluginGuid != FarGuid)
+	Builder.AddEditField(NewItem.Folder, 50, L"FS_Path"sv, DIF_EDITPATH);
+	if (Item.PluginUuid != FarUuid)
 	{
-		const auto plugin = Global->CtrlObject->Plugins->FindPlugin(Item.PluginGuid);
-		Builder.AddSeparator(plugin? plugin->GetTitle().data() : GuidToStr(Item.PluginGuid).data());
+		const auto plugin = Global->CtrlObject->Plugins->FindPlugin(Item.PluginUuid);
+		Builder.AddSeparator(plugin? plugin->Title().c_str() : uuid::str(Item.PluginUuid).c_str());
 		Builder.AddText(lng::MFSShortcutPluginFile);
-		Builder.AddEditField(NewItem.PluginFile, 50, L"FS_PluginFile", DIF_EDITPATH);
+		Builder.AddEditField(NewItem.PluginFile, 50, L"FS_PluginFile"sv, DIF_EDITPATH);
 		Builder.AddText(lng::MFSShortcutPluginData);
-		Builder.AddEditField(NewItem.PluginData, 50, L"FS_PluginData", DIF_EDITPATH);
+		Builder.AddEditField(NewItem.PluginData, 50, L"FS_PluginData"sv, DIF_EDITPATH);
 	}
 	Builder.SetId(FolderShortcutsDlgId);
 	Builder.AddOKCancel();
@@ -289,12 +307,12 @@ static bool EditItemImpl(Shortcuts::shortcut& Item, bool raw)
 	if (NewItem == Item)
 		return false;
 
-	if (Item.PluginGuid == FarGuid)
+	if (Item.PluginUuid == FarUuid)
 	{
 		if (NewItem.Folder.empty())
 		{
 			if (NewItem.Name.empty())
-				assign(NewItem.Name, SeparatorToken);
+				NewItem.Name = SeparatorToken;
 		}
 		else if (!raw)
 		{
@@ -327,7 +345,7 @@ static bool EditItem(VMenu2& Menu, Shortcuts::shortcut& Item, bool raw)
 		return false;
 
 	auto& MenuItem = Menu.current();
-	MenuItem.strName = MakeName(Item);
+	MenuItem.Name = MakeName(Item);
 	return true;
 }
 
@@ -352,10 +370,10 @@ bool Shortcuts::Get(data& Data)
 
 std::list<Shortcuts::shortcut>::const_iterator Shortcuts::Select(bool Raw)
 {
-	const auto FolderList = VMenu2::create(msg(lng::MFolderShortcutsTitle), nullptr, 0, ScrY - 4);
+	const auto FolderList = VMenu2::create(msg(lng::MFolderShortcutsTitle), {}, ScrY - 4);
 	FolderList->SetMenuFlags(VMENU_WRAPMODE | VMENU_AUTOHIGHLIGHT);
 	FolderList->SetHelp(HelpFolderShortcuts);
-	FolderList->SetBottomTitle(msg(lng::MFolderShortcutBottomSub));
+	FolderList->SetBottomTitle(KeysToLocalizedText(KEY_INS, KEY_DEL, KEY_F4, KEY_CTRLUP, KEY_CTRLDOWN));
 	FolderList->SetId(FolderShortcutsMoreId);
 	FillMenu(*FolderList, m_Items, Raw);
 
@@ -363,7 +381,7 @@ std::list<Shortcuts::shortcut>::const_iterator Shortcuts::Select(bool Raw)
 	{
 		const auto Key = RawKey();
 		const auto ItemPos = FolderList->GetSelectPos();
-		const auto Iterator = FolderList->GetUserDataPtr<ITERATOR(m_Items)>(ItemPos);
+		const auto Iterator = FolderList->GetComplexUserDataPtr<ITERATOR(m_Items)>(ItemPos);
 
 		switch (Key)
 		{
@@ -374,7 +392,7 @@ std::list<Shortcuts::shortcut>::const_iterator Shortcuts::Select(bool Raw)
 				const auto newIter = m_Items.emplace(Iterator? *Iterator : m_Items.end(), CreateShortcutFromPanel());
 
 				MenuItemEx NewMenuItem(newIter->Folder);
-				NewMenuItem.UserData = newIter;
+				NewMenuItem.ComplexUserData = newIter;
 				FolderList->AddItem(NewMenuItem, ItemPos);
 				FolderList->SetSelectPos(ItemPos, 1);
 				m_Changed = true;
@@ -395,6 +413,7 @@ std::list<Shortcuts::shortcut>::const_iterator Shortcuts::Select(bool Raw)
 			if (Iterator && EditItem(*FolderList, **Iterator, Raw))
 			{
 				m_Changed = true;
+				FolderList->Refresh();
 			}
 			return true;
 
@@ -425,7 +444,7 @@ std::list<Shortcuts::shortcut>::const_iterator Shortcuts::Select(bool Raw)
 		}
 	});
 
-	return ExitCode < 0? m_Items.end() : *FolderList->GetUserDataPtr<ITERATOR(m_Items)>(ExitCode);
+	return ExitCode < 0? m_Items.end() : *FolderList->GetComplexUserDataPtr<ITERATOR(m_Items)>(ExitCode);
 }
 
 bool Shortcuts::GetOne(size_t Index, data& Data) const
@@ -437,16 +456,16 @@ bool Shortcuts::GetOne(size_t Index, data& Data) const
 	return true;
 }
 
-void Shortcuts::Add(const string& Folder, const GUID& PluginGuid, const string& PluginFile, const string& PluginData)
+void Shortcuts::Add(string_view const Folder, const UUID& PluginUuid, string_view const PluginFile, string_view const PluginData)
 {
-	m_Items.emplace_back(string{}, Folder, PluginFile, PluginData, PluginGuid);
+	m_Items.emplace_back(string{}, Folder, PluginFile, PluginData, PluginUuid);
 	m_Changed = true;
 }
 
-static void MakeListName(const std::list<Shortcuts::shortcut>& List, const string& Key, MenuItemEx& MenuItem)
+static void MakeListName(const std::list<Shortcuts::shortcut>& List, string_view const Key, MenuItemEx& MenuItem)
 {
 	const auto ItemName = List.empty()? msg(lng::MShortcutNone) : MakeName(List.front());
-	MenuItem.strName = concat(msg(lng::MRightCtrl), L"+&"_sv, Key, L" \x2502 "_sv, ItemName);
+	MenuItem.Name = concat(KeyToLocalizedText(KEY_RCTRL), L"+&"sv, Key, L" \x2502 "sv, ItemName);
 	if (List.size() > 1)
 	{
 		MenuItem.Flags |= MIF_SUBMENU;
@@ -467,21 +486,21 @@ static bool EditListItem(const std::list<Shortcuts::shortcut>& List, VMenu2& Men
 	return true;
 }
 
+template<size_t... I>
+static auto make_shortcuts(std::index_sequence<I...>)
+{
+	// Q: Why not just use CTAD?
+	// A: To make Coverity and its compiler happy: 'Internal error #2688: assertion failed at: "edg/src/overload.c", line 27123'
+	return std::array<Shortcuts, sizeof...(I)>{ Shortcuts(I)... };
+}
+
 int Shortcuts::Configure()
 {
-	constexpr auto ShortcutsNumber = 10;
-
-	std::vector<Shortcuts> AllShortcuts;
-	AllShortcuts.reserve(ShortcutsNumber);
-	for (auto i: make_irange(ShortcutsNumber))
-	{
-		AllShortcuts.emplace_back(i);
-	}
-
-	const auto FolderList = VMenu2::create(msg(lng::MFolderShortcutsTitle), nullptr, 0, ScrY - 4);
+	auto AllShortcuts = make_shortcuts(std::make_index_sequence<10>{});
+	const auto FolderList = VMenu2::create(msg(lng::MFolderShortcutsTitle), {}, ScrY - 4);
 	FolderList->SetMenuFlags(VMENU_WRAPMODE);
 	FolderList->SetHelp(HelpFolderShortcuts);
-	FolderList->SetBottomTitle(msg(lng::MFolderShortcutBottom));
+	FolderList->SetBottomTitle(KeysToLocalizedText(KEY_INS, KEY_DEL, KEY_F4));
 	FolderList->SetId(FolderShortcutsId);
 
 	for (auto& i: AllShortcuts)
@@ -496,14 +515,14 @@ int Shortcuts::Configure()
 		const auto Key=RawKey();
 		const auto Pos = FolderList->GetSelectPos();
 
-		const auto& UpdateItem = [&]
+		const auto UpdateItem = [&]
 		{
 			auto& MenuItem = FolderList->current();
 			MakeListName(AllShortcuts[Pos].m_Items, str(Pos), MenuItem);
 			FolderList->UpdateItemFlags(FolderList->GetSelectPos(), std::exchange(MenuItem.Flags, 0));
 		};
 
-		const auto& EditSubmenu = [&]
+		const auto EditSubmenu = [&]
 		{
 			// We don't care about the result here, just letting the user to edit the submenu
 			AllShortcuts[Pos].Select(true);

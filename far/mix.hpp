@@ -35,29 +35,25 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-template<class T>
-auto ToPercent(T Value, T Base)
-{
-	if (!Base)
-		return 0;
+// Internal:
+#include "plugin.hpp"
 
-	return static_cast<int>(std::numeric_limits<T>::max() / 100 > Value?
-		Value * 100 / Base :
-		Value / Base * 100);
-}
+// Platform:
+#include "platform.fwd.hpp"
 
-template<typename T>
-T FromPercent(int Percent, T Base)
-{
-	if (!Percent)
-		return 0;
+// Common:
+#include "common/noncopyable.hpp"
+#include "common/range.hpp"
 
-	return std::numeric_limits<T>::max() / Percent > Base?
-		Base * Percent / 100 :
-		Base / 100 * Percent;
-};
+// External:
 
-bool FarMkTempEx(string &strDest, const wchar_t *Prefix=nullptr, bool WithTempPath = true, const wchar_t *UserTempPath=nullptr);
+//----------------------------------------------------------------------------
+
+unsigned int ToPercent(unsigned long long Value, unsigned long long Base);
+unsigned long long FromPercent(unsigned int Percent, unsigned long long Base);
+
+string MakeTemp(string_view Prefix = {}, bool WithTempPath = true, string_view UserTempPath = {});
+string MakeTempInSameDir(string_view FileName);
 
 void PluginPanelItemToFindDataEx(const PluginPanelItem& Src, os::fs::find_data& Dest);
 
@@ -81,18 +77,44 @@ public:
 	}
 };
 
-void FindDataExToPluginPanelItemHolder(const os::fs::find_data& Src, PluginPanelItemHolder& Dest);
+void FindDataExToPluginPanelItemHolder(const os::fs::find_data& Src, PluginPanelItemHolder& Holder);
 
-void FreePluginPanelItem(const PluginPanelItem& Data);
-void FreePluginPanelItems(std::vector<PluginPanelItem>& Items);
+void FreePluginPanelItemNames(const PluginPanelItem& Data);
+void FreePluginPanelItemUserData(HANDLE hPlugin, const UserDataItem& Data);
+void FreePluginPanelItemDescriptionOwnerAndColumns(const PluginPanelItem& Data);
+void FreePluginPanelItemsNames(const std::vector<PluginPanelItem>& Items);
 
-void FreePluginPanelItemsUserData(HANDLE hPlugin,PluginPanelItem *PanelItem,size_t ItemsNumber);
+class plugin_item_list
+{
+public:
+	NONCOPYABLE(plugin_item_list);
+	MOVE_CONSTRUCTIBLE(plugin_item_list);
+
+	plugin_item_list() = default;
+	~plugin_item_list();
+
+	void emplace_back(const PluginPanelItem& Item);
+	void reserve(size_t Size);
+
+	const PluginPanelItem* data() const;
+	PluginPanelItem* data();
+	size_t size() const;
+	bool empty() const;
+	const std::vector<PluginPanelItem>& items() const;
+
+private:
+	std::vector<PluginPanelItem> m_Data;
+};
 
 template<class T>
-void DeleteRawArray(const T* const* Data, size_t Size)
+void DeleteRawArray(span<T> Data)
 {
-	std::for_each(Data, Data + Size, std::default_delete<const T[]>());
-	delete[] Data;
+	for (const auto& i: Data)
+	{
+		delete[] i;
+	}
+
+	delete[] Data.data();
 }
 
 WINDOWINFO_TYPE WindowTypeToPluginWindowType(int fType);
@@ -110,17 +132,18 @@ private:
 	bool OldState;
 };
 
-struct uuid_hash
+template<>
+struct std::hash<UUID>
 {
-	size_t operator ()(const GUID& Key) const
+	size_t operator()(const UUID& Value) const noexcept
 	{
 		RPC_STATUS Status;
-		return UuidHash(const_cast<UUID*>(&Key), &Status);
+		return UuidHash(const_cast<UUID*>(&Value), &Status);
 	}
 };
 
 void ReloadEnvironment();
 
-unsigned int CRC32(unsigned int crc, const void* buffer, size_t size);
+string version_to_string(const VersionInfo& Version);
 
 #endif // MIX_HPP_67869A41_F20D_4C95_86E1_4D598A356EE1

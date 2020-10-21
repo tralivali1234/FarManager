@@ -30,34 +30,81 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "eol.hpp"
 
-static const auto
-	none_s = L""_sv,
-	win_s = L"\r\n"_sv,       // DOS/Windows
-	unix_s = L"\n"_sv,        // Unix
-	mac_s = L"\r"_sv,         // Mac
-	bad_win_s = L"\r\r\n"_sv; // result of <CR><LF> text mode conversion
+// Internal:
 
-string_view eol::str(type Value)
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+enum eol_type: char
 {
-	return
-		Value == type::win? win_s :
-		Value == type::unix? unix_s :
-		Value == type::mac? mac_s :
-		Value == type::bad_win? bad_win_s :
-		none_s;
+	none = 0,
+	win,      // <CR><LF>      \r\n
+	unix,     // <LF>          \n
+	mac,      // <CR>          \r
+	bad_win,  // <CR><CR><LF>  \r\r\n
+};
+
+static const auto
+	none_s = L""sv,
+	win_s = L"\r\n"sv,       // DOS/Windows
+	unix_s = L"\n"sv,        // Unix
+	mac_s = L"\r"sv,         // Mac
+	bad_win_s = L"\r\r\n"sv; // result of <CR><LF> text mode conversion
+
+const eol eol::none(eol_type::none);
+const eol eol::win(eol_type::win);
+const eol eol::unix(eol_type::unix);
+const eol eol::mac(eol_type::mac);
+const eol eol::bad_win(eol_type::bad_win);
+const eol eol::system = win;
+
+eol::eol():
+	m_Type(eol_type::none)
+{
 }
 
-eol::type eol::parse(const string_view& Value)
+eol eol::parse(string_view const Value)
 {
-	return
-		Value == win_s? type::win :
-		Value == unix_s? type::unix :
-		Value == mac_s? type::mac :
-		Value == bad_win_s? type::bad_win :
-		type::none;
+	return eol(
+		Value == win_s?     eol_type::win :
+		Value == unix_s?    eol_type::unix :
+		Value == mac_s?     eol_type::mac :
+		Value == bad_win_s? eol_type::bad_win :
+		                    eol_type::none
+	);
+}
+
+string_view eol::str() const
+{
+	switch (m_Type)
+	{
+	case eol_type::win:     return win_s;
+	case eol_type::unix:    return unix_s;
+	case eol_type::mac:     return mac_s;
+	case eol_type::bad_win: return bad_win_s;
+	default:                return none_s;
+	}
+}
+
+bool eol::operator==(const eol& rhs) const
+{
+	return m_Type == rhs.m_Type;
+}
+
+bool eol::operator!=(const eol& rhs) const
+{
+	return !(*this == rhs);
+}
+
+eol::eol(char const Type):
+	m_Type(Type)
+{
 }

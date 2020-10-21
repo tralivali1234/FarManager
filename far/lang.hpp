@@ -32,7 +32,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "bootstrap/lang.inc"
+
+// Platform:
+
+// Common:
+#include "common/utility.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 template<class T>
 constexpr lng operator+(lng Id, T Shift)
@@ -48,11 +58,5 @@ inline lng operator++(lng& Id, int)
 }
 
 const string& msg(lng Id);
-
-template<typename... args>
-auto format(lng Id, args&&... Args)
-{
-	return format(msg(Id), FWD(Args)...);
-}
 
 #endif // LANG_HPP_BB6D2D7F_CD59_4D0F_B11D_2077A8A22947

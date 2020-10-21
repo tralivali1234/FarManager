@@ -1,4 +1,5 @@
-﻿/*
+﻿// validator: no-self-include
+/*
 vc_crt_fix_impl.cpp
 
 Workaround for Visual C++ CRT incompatibility with old Windows versions
@@ -30,20 +31,31 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include <windows.h>
 #include <utility>
 
+#include <windows.h>
+
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#endif
+
+
 template<typename T>
-T GetFunctionPointer(const wchar_t* ModuleName, const char* FunctionName, T Replacement)
+static T GetFunctionPointer(const wchar_t* ModuleName, const char* FunctionName, T Replacement)
 {
-	const auto Address = GetProcAddress(GetModuleHandleW(ModuleName), FunctionName);
-	return Address? reinterpret_cast<T>(Address) : Replacement;
+	const auto Module = GetModuleHandleW(ModuleName);
+	const auto Address = Module? GetProcAddress(Module, FunctionName) : nullptr;
+	return Address? reinterpret_cast<T>(reinterpret_cast<void*>(Address)) : Replacement;
 }
 
 #define CREATE_FUNCTION_POINTER(ModuleName, FunctionName)\
 static const auto Function = GetFunctionPointer(ModuleName, #FunctionName, &implementation::FunctionName)
 
-static const wchar_t kernel32[] = L"kernel32";
+namespace modules
+{
+	static const wchar_t kernel32[] = L"kernel32";
+	static const wchar_t ntdll[] = L"ntdll";
+}
 
 static void* XorPointer(void* Ptr)
 {
@@ -74,7 +86,7 @@ extern "C" PVOID WINAPI EncodePointerWrapper(PVOID Ptr)
 		}
 	};
 
-	CREATE_FUNCTION_POINTER(kernel32, EncodePointer);
+	CREATE_FUNCTION_POINTER(modules::kernel32, EncodePointer);
 	return Function(Ptr);
 }
 
@@ -89,7 +101,7 @@ extern "C" PVOID WINAPI DecodePointerWrapper(PVOID Ptr)
 		}
 	};
 
-	CREATE_FUNCTION_POINTER(kernel32, DecodePointer);
+	CREATE_FUNCTION_POINTER(modules::kernel32, DecodePointer);
 	return Function(Ptr);
 }
 
@@ -113,10 +125,13 @@ extern "C" BOOL WINAPI GetModuleHandleExWWrapper(DWORD Flags, LPCWSTR ModuleName
 					wchar_t Buffer[MAX_PATH];
 					if (!GetModuleFileNameW(ModuleValue, Buffer, ARRAYSIZE(Buffer)))
 						return FALSE;
-					LoadLibraryW(Buffer);
+					// It's the same so not really necessary, but analysers report handle leak otherwise.
+					*Module = LoadLibraryW(Buffer);
 				}
-
-				*Module = ModuleValue;
+				else
+				{
+					*Module = ModuleValue;
+				}
 				return TRUE;
 			}
 
@@ -131,7 +146,7 @@ extern "C" BOOL WINAPI GetModuleHandleExWWrapper(DWORD Flags, LPCWSTR ModuleName
 		}
 	};
 
-	CREATE_FUNCTION_POINTER(kernel32, GetModuleHandleExW);
+	CREATE_FUNCTION_POINTER(modules::kernel32, GetModuleHandleExW);
 	return Function(Flags, ModuleName, Module);
 }
 
@@ -154,6 +169,13 @@ namespace slist
 		public:
 			critical_section() { InitializeCriticalSection(&m_Lock); }
 			~critical_section() { DeleteCriticalSection(&m_Lock); }
+
+			critical_section(const critical_section&) = delete;
+			critical_section(critical_section&&) = default;
+
+			critical_section& operator=(const critical_section&) = delete;
+			critical_section& operator=(critical_section&&) = default;
+
 			void lock() { EnterCriticalSection(&m_Lock); }
 			void unlock() { LeaveCriticalSection(&m_Lock); }
 
@@ -176,7 +198,7 @@ namespace slist
 				free(Ptr);
 			}
 
-			service_entry* ServiceNext;
+			service_entry* ServiceNext{};
 		};
 
 		class slist_lock
@@ -192,6 +214,9 @@ namespace slist
 			{
 				m_Entry.unlock();
 			}
+
+			slist_lock(const slist_lock&) = delete;
+			slist_lock& operator=(const slist_lock&) = delete;
 
 		private:
 			service_entry& m_Entry;
@@ -292,14 +317,14 @@ namespace slist
 			return ListHead->Depth;
 		}
 #endif
-	};
+	}
 }
 
 // InitializeSListHead (VC2015)
 extern "C" void WINAPI InitializeSListHeadWrapper(PSLIST_HEADER ListHead)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, InitializeSListHead);
+	CREATE_FUNCTION_POINTER(modules::kernel32, InitializeSListHead);
 	return Function(ListHead);
 }
 
@@ -307,7 +332,7 @@ extern "C" void WINAPI InitializeSListHeadWrapper(PSLIST_HEADER ListHead)
 extern "C" PSLIST_ENTRY WINAPI InterlockedFlushSListWrapper(PSLIST_HEADER ListHead)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, InterlockedFlushSList);
+	CREATE_FUNCTION_POINTER(modules::kernel32, InterlockedFlushSList);
 	return Function(ListHead);
 }
 
@@ -315,7 +340,7 @@ extern "C" PSLIST_ENTRY WINAPI InterlockedFlushSListWrapper(PSLIST_HEADER ListHe
 extern "C" PSLIST_ENTRY WINAPI InterlockedPopEntrySListWrapper(PSLIST_HEADER ListHead)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, InterlockedPopEntrySList);
+	CREATE_FUNCTION_POINTER(modules::kernel32, InterlockedPopEntrySList);
 	return Function(ListHead);
 }
 
@@ -323,7 +348,7 @@ extern "C" PSLIST_ENTRY WINAPI InterlockedPopEntrySListWrapper(PSLIST_HEADER Lis
 extern "C" PSLIST_ENTRY WINAPI InterlockedPushEntrySListWrapper(PSLIST_HEADER ListHead, PSLIST_ENTRY ListEntry)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, InterlockedPushEntrySList);
+	CREATE_FUNCTION_POINTER(modules::kernel32, InterlockedPushEntrySList);
 	return Function(ListHead, ListEntry);
 }
 
@@ -331,7 +356,7 @@ extern "C" PSLIST_ENTRY WINAPI InterlockedPushEntrySListWrapper(PSLIST_HEADER Li
 extern "C" PSLIST_ENTRY WINAPI InterlockedPushListSListExWrapper(PSLIST_HEADER ListHead, PSLIST_ENTRY List, PSLIST_ENTRY ListEnd, ULONG Count)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, InterlockedPushListSListEx);
+	CREATE_FUNCTION_POINTER(modules::kernel32, InterlockedPushListSListEx);
 	return Function(ListHead, List, ListEnd, Count);
 }
 
@@ -339,7 +364,7 @@ extern "C" PSLIST_ENTRY WINAPI InterlockedPushListSListExWrapper(PSLIST_HEADER L
 extern "C" PSLIST_ENTRY WINAPI RtlFirstEntrySListWrapper(PSLIST_HEADER ListHead)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, RtlFirstEntrySList);
+	CREATE_FUNCTION_POINTER(modules::ntdll, RtlFirstEntrySList);
 	return Function(ListHead);
 }
 
@@ -347,9 +372,58 @@ extern "C" PSLIST_ENTRY WINAPI RtlFirstEntrySListWrapper(PSLIST_HEADER ListHead)
 extern "C" USHORT WINAPI QueryDepthSListWrapper(PSLIST_HEADER ListHead)
 {
 	using namespace slist;
-	CREATE_FUNCTION_POINTER(kernel32, QueryDepthSList);
+	CREATE_FUNCTION_POINTER(modules::kernel32, QueryDepthSList);
 	return Function(ListHead);
 }
+
+// GetNumaHighestNodeNumber (VC2017)
+extern "C" BOOL WINAPI GetNumaHighestNodeNumberWrapper(PULONG HighestNodeNumber)
+{
+	struct implementation
+	{
+		static BOOL WINAPI GetNumaHighestNodeNumber(PULONG HighestNodeNumber)
+		{
+			*HighestNodeNumber = 0;
+			return TRUE;
+		}
+	};
+
+	CREATE_FUNCTION_POINTER(modules::kernel32, GetNumaHighestNodeNumber);
+	return Function(HighestNodeNumber);
+}
+
+// GetLogicalProcessorInformation (VC2017)
+extern "C" BOOL WINAPI GetLogicalProcessorInformationWrapper(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION Buffer, PDWORD ReturnLength)
+{
+	struct implementation
+	{
+		static BOOL WINAPI GetLogicalProcessorInformation(PSYSTEM_LOGICAL_PROCESSOR_INFORMATION Buffer, PDWORD ReturnLength)
+		{
+			SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+			return FALSE;
+		}
+	};
+
+	CREATE_FUNCTION_POINTER(modules::kernel32, GetLogicalProcessorInformation);
+	return Function(Buffer, ReturnLength);
+}
+
+// SetThreadStackGuarantee (VC2019)
+extern "C" BOOL WINAPI SetThreadStackGuaranteeWrapper(PULONG StackSizeInBytes)
+{
+	struct implementation
+	{
+		static BOOL WINAPI SetThreadStackGuarantee(PULONG StackSizeInBytes)
+		{
+			SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+			return FALSE;
+		}
+	};
+
+	CREATE_FUNCTION_POINTER(modules::kernel32, SetThreadStackGuarantee);
+	return Function(StackSizeInBytes);
+}
+
 
 // disable VS2015 telemetry
 extern "C"
@@ -358,4 +432,4 @@ extern "C"
 	void __telemetry_main_invoke_trigger() {}
 	void __telemetry_main_return_trigger() {}
 	void __vcrt_uninitialize_telemetry_provider() {}
-};
+}

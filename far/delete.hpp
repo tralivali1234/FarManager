@@ -35,40 +35,43 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "panelfwd.hpp"
 
-enum DIRDELTYPE: int;
-enum DEL_RESULT: int;
+// Platform:
 
-class ShellDelete: noncopyable
+// Common:
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+enum class delete_type
 {
-public:
-	ShellDelete(panel_ptr SrcPanel, bool Wipe);
+	recycle,
+	remove,
+	erase,
 
-private:
-	DEL_RESULT AskDeleteReadOnly(const string& Name, DWORD Attr, bool Wipe);
-	DEL_RESULT ShellRemoveFile(const string& Name, bool Wipe, int TotalPercent);
-	DEL_RESULT ERemoveDirectory(const string& Name, DIRDELTYPE Type);
-	bool RemoveToRecycleBin(const string& Name, bool dir, DEL_RESULT& ret);
-
-	int ReadOnlyDeleteMode;
-	int m_SkipMode;
-	int SkipWipeMode;
-	int SkipFoldersMode;
-	unsigned ProcessedItems;
+	delete_type_count
 };
 
-void DeleteDirTree(const string& Dir);
-bool DeleteFileWithFolder(const string& FileName);
+void Delete(const panel_ptr& SrcPanel, delete_type Type);
+void DeleteDirTree(string_view Dir);
+bool DeleteFileWithFolder(string_view FileName);
 
 class delayed_deleter: noncopyable
 {
 public:
-	explicit delayed_deleter(string pathToDelete);
+	delayed_deleter(bool WithFolder);
 	~delayed_deleter();
 
+	void add(string File);
+	bool any() const;
+
 private:
-	string m_pathToDelete;
+	std::vector<string> m_Files;
+	bool m_WithFolder;
 };
 
 #endif // DELETE_HPP_835E1D6F_E70E_4AF7_8D20_1668C007B16C

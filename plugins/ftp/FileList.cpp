@@ -1,4 +1,4 @@
-#include <all_far.h>
+﻿#include <all_far.h>
 #pragma hdrstop
 
 #include "Int.h"
@@ -238,7 +238,11 @@ BOOL FTP::ShowFilesList(FP_SizeItemList* il)
 
 	w = Min(Max(60,Min(w,MSZ)),FP_ConWidth()-8);
 
-	if(!cn) return FALSE;
+	if(!cn)
+	{
+		free(mi);
+		return FALSE;
+	}
 
 	//Calc length of size and count digits
 	int szSize = 0,

@@ -35,6 +35,18 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+class Dialog;
 
 class UserMenu: noncopyable
 {
@@ -42,23 +54,23 @@ class UserMenu: noncopyable
 
 public:
 	explicit UserMenu(bool ChooseMenuType); //	true - выбор типа меню (основное или локальное), false - зависит от наличия FarMenu.Ini в текущем каталоге
-	explicit UserMenu(const string& MenuFileName);
+	explicit UserMenu(string_view MenuFileName);
 	~UserMenu();
 
 	using menu_container = std::list<UserMenuItem>;
 
 private:
-	void ProcessUserMenu(bool ChooseMenuType, const string& MenuFileName);
-	bool DeleteMenuRecord(menu_container& Menu, const menu_container::iterator& MenuItem);
+	void ProcessUserMenu(bool ChooseMenuType, string_view MenuFileName);
+	bool DeleteMenuRecord(menu_container& Menu, const menu_container::iterator& MenuItem) const;
 	bool EditMenu(menu_container& Menu, menu_container::iterator* MenuItem, bool Create);
-	int ProcessSingleMenu(menu_container& Menu, int MenuPos, menu_container& MenuRoot, const string& MenuFileName, const string& Title);
-	void SaveMenu(const string& MenuFileName) const;
+	int ProcessSingleMenu(menu_container& Menu, int MenuPos, menu_container& MenuRoot, string_view MenuFileName, const string& Title);
+	void SaveMenu(string_view MenuFileName) const;
 	intptr_t EditMenuDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* Param2);
 
 	enum class menu_mode: int;
 
 	menu_mode m_MenuMode;
-	bool m_MenuModified;
+	mutable bool m_MenuModified;
 	bool m_ItemChanged;
 	uintptr_t m_MenuCP;
 	menu_container m_Menu;

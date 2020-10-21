@@ -32,15 +32,24 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "dlgedit.hpp"
+
+// Internal:
 #include "dialog.hpp"
 #include "history.hpp"
 #include "editcontrol.hpp"
 #include "config.hpp"
 #include "syslog.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 DlgEdit::DlgEdit(window_ptr Owner,size_t Index,DLGEDITTYPE Type):
 	SimpleScreenObject(std::move(Owner)),
@@ -107,7 +116,7 @@ DlgEdit::~DlgEdit()
 }
 
 
-void DlgEdit::SetHistory(const string& Name)
+void DlgEdit::SetHistory(string_view const Name)
 {
 	iHistory = std::make_unique<History>(HISTORYTYPE_DIALOG, Name, Global->Opt->Dialogs.EditHistory);
 }
@@ -145,15 +154,15 @@ void DlgEdit::DisplayObject()
 		lineEdit->DisplayObject();
 }
 
-void DlgEdit::SetPosition(int X1,int Y1,int X2,int Y2)
+void DlgEdit::SetPosition(rectangle Where)
 {
 #if defined(PROJECT_DI_MEMOEDIT)
 
 	if (Type == DLGEDIT_MULTILINE)
-		multiEdit->SetPosition(X1,Y1,X2,Y2);
+		multiEdit->SetPosition(Where);
 	else
 #endif
-		lineEdit->SetPosition(X1,Y1,X2,Y2);
+		lineEdit->SetPosition(Where);
 }
 
 void DlgEdit::Show()
@@ -167,15 +176,15 @@ void DlgEdit::Show()
 		lineEdit->Show();
 }
 
-void DlgEdit::GetPosition(int& X1,int& Y1,int& X2,int& Y2) const
+rectangle DlgEdit::GetPosition() const
 {
 #if defined(PROJECT_DI_MEMOEDIT)
 
 	if (Type == DLGEDIT_MULTILINE)
-		multiEdit->GetPosition(X1,Y1,X2,Y2);
+		return multiEdit->GetPosition();
 	else
 #endif
-		lineEdit->GetPosition(X1,Y1,X2,Y2);
+		return lineEdit->GetPosition();
 }
 
 void DlgEdit::SetDialogParent(DWORD Sets)
@@ -238,7 +247,7 @@ bool DlgEdit::GetOvertypeMode() const
 		return lineEdit->GetOvertypeMode();
 }
 
-void DlgEdit::SetInputMask(const string& InputMask)
+void DlgEdit::SetInputMask(string_view const InputMask)
 {
 	if (Type == DLGEDIT_SINGLELINE)
 		lineEdit->SetInputMask(InputMask);
@@ -285,7 +294,7 @@ bool DlgEdit::GetClearFlag() const
 		return lineEdit->GetClearFlag();
 }
 
-void DlgEdit::SetHiString(const string& Str)
+void DlgEdit::SetHiString(string_view const Str)
 {
 #if defined(PROJECT_DI_MEMOEDIT)
 
@@ -307,7 +316,7 @@ void DlgEdit::Changed()
 	}
 }
 
-void DlgEdit::SetString(const string& Str)
+void DlgEdit::SetString(string_view const Str)
 {
 #if defined(PROJECT_DI_MEMOEDIT)
 
@@ -322,7 +331,7 @@ void DlgEdit::SetString(const string& Str)
 	}
 }
 
-void DlgEdit::InsertString(const string& Str)
+void DlgEdit::InsertString(string_view const Str)
 {
 #if defined(PROJECT_DI_MEMOEDIT)
 	if (Type == DLGEDIT_MULTILINE)
@@ -741,7 +750,7 @@ bool DlgEdit::HistoryGetSimilar(string &strStr, int LastCmdPartLength, bool bApp
 	return iHistory?iHistory->GetSimilar(strStr, LastCmdPartLength, bAppend):false;
 }
 
-Dialog* DlgEdit::GetDialog(void)const
+Dialog* DlgEdit::GetDialog() const
 {
 	return dynamic_cast<Dialog*>(GetOwner().get());
 }

@@ -1,4 +1,4 @@
-#include "msg.h"
+﻿#include "msg.h"
 #include "utils.hpp"
 #include "sysutils.hpp"
 #include "farutils.hpp"
@@ -7,12 +7,12 @@
 #include "archive.hpp"
 #include "options.hpp"
 
-wstring format_time(unsigned __int64 t) {
-  unsigned __int64 s = t % 60;
-  unsigned __int64 m = (t / 60) % 60;
-  unsigned __int64 h = t / 60 / 60;
-  wostringstream st;
-  st << setfill(L'0') << setw(2) << h << L":" << setw(2) << m << L":" << setw(2) << s;
+std::wstring format_time(UInt64 t) {
+  UInt64 s = t % 60;
+  UInt64 m = (t / 60) % 60;
+  UInt64 h = t / 60 / 60;
+  std::wostringstream st;
+  st << std::setfill(L'0') << std::setw(2) << h << L":" << std::setw(2) << m << L":" << std::setw(2) << s;
   return st.str();
 }
 
@@ -21,65 +21,65 @@ private:
   bool new_arc;
   UInt64 total;
   UInt64 completed;
-  wstring arc_path;
-  wstring file_path;
+  std::wstring arc_path;
+  std::wstring file_path;
   UInt64 file_total;
   UInt64 file_completed;
-  unsigned __int64 total_data_read;
-  unsigned __int64 total_data_written;
+  UInt64 total_data_read;
+  UInt64 total_data_written;
 
   virtual void do_update_ui() {
     const unsigned c_width = 60;
 
     percent_done = calc_percent(completed, total);
 
-    unsigned __int64 time = time_elapsed();
-    unsigned __int64 speed;
+    UInt64 time = time_elapsed();
+    UInt64 speed;
     if (time == 0)
       speed = 0;
     else
       speed = al_round(static_cast<double>(completed) / time * ticks_per_sec());
 
-    unsigned __int64 total_time;
+    UInt64 total_time;
     if (completed)
-      total_time = static_cast<unsigned __int64>(static_cast<double>(total) / completed * time);
+      total_time = static_cast<UInt64>(static_cast<double>(total) / completed * time);
     else
       total_time = 0;
     if (total_time < time)
       total_time = time;
 
-    wostringstream st;
+    std::wostringstream st;
     st << fit_str(arc_path, c_width) << L'\n';
     st << L"\x1\n";
     st << fit_str(file_path, c_width) << L'\n';
-    st << setw(7) << format_data_size(file_completed, get_size_suffixes()) << L" / " <<
+    st << std::setw(7) << format_data_size(file_completed, get_size_suffixes()) << L" / " <<
       format_data_size(file_total, get_size_suffixes()) << L'\n';
     st << Far::get_progress_bar_str(c_width, calc_percent(file_completed, file_total), 100) << L'\n';
     st << L"\x1\n";
-    st << setw(7) << format_data_size(completed, get_size_suffixes()) << L" / " <<
-      format_data_size(total, get_size_suffixes()) << L" @ " << setw(9) <<
+    st << std::setw(7) << format_data_size(completed, get_size_suffixes()) << L" / " <<
+      format_data_size(total, get_size_suffixes()) << L" @ " << std::setw(9) <<
       format_data_size(speed, get_speed_suffixes()) << L" -" << format_time((total_time - time) / ticks_per_sec()) << L'\n';
-    st << setw(7) << format_data_size(total_data_read, get_size_suffixes()) << L" \x2192 " <<
-      setw(7) << format_data_size(total_data_written, get_size_suffixes()) << L" = " <<
-      setw(2) << calc_percent(total_data_written, total_data_read) << L"%" << L'\n';
+    st << std::setw(7) << format_data_size(total_data_read, get_size_suffixes()) << L" \x2192 " <<
+      std::setw(7) << format_data_size(total_data_written, get_size_suffixes()) << L" = " <<
+      std::setw(2) << calc_percent(total_data_written, total_data_read) << L"%" << L'\n';
     st << Far::get_progress_bar_str(c_width, percent_done, 100) << L'\n';
     progress_text = st.str();
   }
 
 public:
-  ArchiveUpdateProgress(bool new_arc, const wstring& arc_path):
+  ArchiveUpdateProgress(bool new_arc, const std::wstring& arcpath):
     ProgressMonitor(Far::get_msg(new_arc ? MSG_PROGRESS_CREATE : MSG_PROGRESS_UPDATE)),
     new_arc(new_arc),
-    arc_path(arc_path),
-    completed(0),
     total(0),
-    file_completed(0),
+    completed(0),
+    arc_path(arcpath),
     file_total(0),
+    file_completed(0),
     total_data_read(0),
     total_data_written(0) {
   }
 
-  void on_open_file(const wstring& file_path, unsigned __int64 size) {
+  void on_open_file(const std::wstring& file_path, UInt64 size) {
     CriticalSectionLock lock(GetSync());
     this->file_path = file_path;
     file_total = size;
@@ -128,9 +128,9 @@ DWORD translate_seek_method(UInt32 seek_origin) {
 
 class UpdateStream: public IOutStream {
 protected:
-  shared_ptr<ArchiveUpdateProgress> progress;
+  std::shared_ptr<ArchiveUpdateProgress> progress;
 public:
-  UpdateStream(shared_ptr<ArchiveUpdateProgress> progress): progress(progress) {
+  UpdateStream(std::shared_ptr<ArchiveUpdateProgress> progress): progress(progress) {
   }
   virtual ~UpdateStream() {
   }
@@ -140,7 +140,7 @@ public:
 
 class SimpleUpdateStream: public UpdateStream, public ComBase, private File {
 public:
-  SimpleUpdateStream(const wstring& file_path, shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress) {
+  SimpleUpdateStream(const std::wstring& file_path, std::shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress) {
     RETRY_OR_IGNORE_BEGIN
     open(file_path, GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, 0);
     RETRY_END(*progress)
@@ -170,7 +170,7 @@ public:
     COM_ERROR_HANDLER_BEGIN
     if (newPosition)
       *newPosition = 0;
-    unsigned __int64 new_position = set_pos(offset, translate_seek_method(seekOrigin));
+    UInt64 new_position = set_pos(offset, translate_seek_method(seekOrigin));
     if (newPosition)
       *newPosition = new_position;
     return S_OK;
@@ -193,14 +193,14 @@ public:
 };
 
 
-void create_sfx_module(const wstring& file_path, const SfxOptions& sfx_options);
+void create_sfx_module(const std::wstring& file_path, const SfxOptions& sfx_options);
 
 class SfxUpdateStream: public UpdateStream, public ComBase, private File {
 private:
-  unsigned __int64 start_offset;
+  UInt64 start_offset;
 
 public:
-  SfxUpdateStream(const wstring& file_path, const SfxOptions& sfx_options, shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress) {
+  SfxUpdateStream(const std::wstring& file_path, const SfxOptions& sfx_options, std::shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress) {
     RETRY_OR_IGNORE_BEGIN
     try {
       create_sfx_module(file_path, sfx_options);
@@ -238,10 +238,10 @@ public:
     COM_ERROR_HANDLER_BEGIN
     if (newPosition)
       *newPosition = 0;
-    __int64 real_offset = offset;
+    Int64 real_offset = offset;
     if (seekOrigin == STREAM_SEEK_SET)
       real_offset += start_offset;
-    unsigned __int64 new_position = set_pos(real_offset, translate_seek_method(seekOrigin));
+    UInt64 new_position = set_pos(real_offset, translate_seek_method(seekOrigin));
     if (new_position < start_offset)
       FAIL(E_INVALIDARG);
     new_position -= start_offset;
@@ -269,36 +269,36 @@ public:
 
 class MultiVolumeUpdateStream: public UpdateStream, public ComBase {
 private:
-  wstring file_path;
-  unsigned __int64 volume_size;
+  std::wstring file_path;
+  UInt64 volume_size;
 
-  unsigned __int64 stream_pos;
-  unsigned __int64 seek_stream_pos;
-  unsigned __int64 stream_size;
+  UInt64 stream_pos;
+  UInt64 seek_stream_pos;
+  UInt64 stream_size;
   bool next_volume;
   File volume;
 
-  wstring get_volume_path(unsigned __int64 volume_idx) {
-    wstring volume_ext = uint_to_str(volume_idx + 1);
+  std::wstring get_volume_path(UInt64 volume_idx) {
+    std::wstring volume_ext = uint_to_str(volume_idx + 1);
     if (volume_ext.size() < 3)
       volume_ext.insert(0, 3 - volume_ext.size(), L'0');
     volume_ext.insert(0, 1, L'.');
 
     size_t pos = file_path.find_last_of(L'.');
-    if (pos != wstring::npos && pos != 0) {
-      wstring ext = file_path.substr(pos);
+    if (pos != std::wstring::npos && pos != 0) {
+      std::wstring ext = file_path.substr(pos);
       if (_wcsicmp(ext.c_str(), c_volume_ext) == 0)
         return file_path.substr(0, pos) + volume_ext;
     }
     return file_path + volume_ext;
   }
 
-  unsigned __int64 get_last_volume_idx() {
+  UInt64 get_last_volume_idx() {
     return stream_size ? (stream_size - 1) / volume_size : 0;
   }
 
 public:
-  MultiVolumeUpdateStream(const wstring& file_path, unsigned __int64 volume_size, shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress), file_path(file_path), volume_size(volume_size), stream_pos(0), seek_stream_pos(0), stream_size(0), next_volume(false) {
+  MultiVolumeUpdateStream(const std::wstring& file_path, UInt64 volume_size, std::shared_ptr<ArchiveUpdateProgress> progress): UpdateStream(progress), file_path(file_path), volume_size(volume_size), stream_pos(0), seek_stream_pos(0), stream_size(0), next_volume(false) {
     RETRY_OR_IGNORE_BEGIN
     volume.open(get_volume_path(0), GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, 0);
     RETRY_END(*progress)
@@ -314,8 +314,8 @@ public:
     if (processedSize)
       *processedSize = 0;
     if (seek_stream_pos != stream_pos) {
-      unsigned __int64 volume_idx = seek_stream_pos / volume_size;
-      unsigned __int64 last_volume_idx = get_last_volume_idx();
+      UInt64 volume_idx = seek_stream_pos / volume_size;
+      UInt64 last_volume_idx = get_last_volume_idx();
       while (last_volume_idx + 1 < volume_idx) {
         last_volume_idx += 1;
         RETRY_OR_IGNORE_BEGIN
@@ -343,7 +343,7 @@ public:
 
     unsigned data_off = 0;
     do {
-      unsigned __int64 volume_idx = stream_pos / volume_size;
+      UInt64 volume_idx = stream_pos / volume_size;
 
       if (next_volume) { // advance to next volume
         if (volume_idx > get_last_volume_idx()) {
@@ -359,7 +359,7 @@ public:
         next_volume = false;
       }
 
-      unsigned __int64 volume_upper_bound = (volume_idx + 1) * volume_size;
+      UInt64 volume_upper_bound = (volume_idx + 1) * volume_size;
       unsigned write_size;
       if (stream_pos + (size - data_off) >= volume_upper_bound) {
         write_size = static_cast<unsigned>(volume_upper_bound - stream_pos);
@@ -415,8 +415,8 @@ public:
     if (stream_size == newSize)
       return S_OK;
 
-    unsigned __int64 last_volume_idx = get_last_volume_idx();
-    unsigned __int64 volume_idx = static_cast<unsigned>(newSize / volume_size);
+    UInt64 last_volume_idx = get_last_volume_idx();
+    UInt64 volume_idx = static_cast<unsigned>(newSize / volume_size);
     while (last_volume_idx + 1 < volume_idx) {
       last_volume_idx += 1;
       RETRY_OR_IGNORE_BEGIN
@@ -438,7 +438,7 @@ public:
     volume.set_end();
     RETRY_END(*progress)
 
-    for (unsigned __int64 extra_idx = volume_idx + 1; extra_idx <= last_volume_idx; extra_idx++) {
+    for (UInt64 extra_idx = volume_idx + 1; extra_idx <= last_volume_idx; extra_idx++) {
       File::delete_file(get_volume_path(extra_idx));
     }
 
@@ -448,10 +448,10 @@ public:
     COM_ERROR_HANDLER_END
   }
 
-  virtual void clean_files() throw() {
+  virtual void clean_files() noexcept {
     volume.close();
-    unsigned __int64 last_volume_idx = get_last_volume_idx();
-    for (unsigned __int64 volume_idx = 0; volume_idx <= last_volume_idx; volume_idx++) {
+    UInt64 last_volume_idx = get_last_volume_idx();
+    for (UInt64 volume_idx = 0; volume_idx <= last_volume_idx; volume_idx++) {
       File::delete_file_nt(get_volume_path(volume_idx));
     }
   }
@@ -460,10 +460,10 @@ public:
 
 class FileReadStream: public IInStream, public IStreamGetSize, public ComBase, private File {
 private:
-  shared_ptr<ArchiveUpdateProgress> progress;
+  std::shared_ptr<ArchiveUpdateProgress> progress;
 
 public:
-  FileReadStream(const wstring& file_path, bool open_shared, shared_ptr<ArchiveUpdateProgress> progress): progress(progress) {
+  FileReadStream(const std::wstring& file_path, bool open_shared, std::shared_ptr<ArchiveUpdateProgress> progress): progress(progress) {
     open(file_path, FILE_READ_DATA, FILE_SHARE_READ | (open_shared ? FILE_SHARE_WRITE | FILE_SHARE_DELETE : 0), OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN);
   }
 
@@ -489,7 +489,7 @@ public:
     COM_ERROR_HANDLER_BEGIN
     if (newPosition)
       *newPosition = 0;
-    unsigned __int64 new_position = set_pos(offset, translate_seek_method(seekOrigin));
+    UInt64 new_position = set_pos(offset, translate_seek_method(seekOrigin));
     if (newPosition)
       *newPosition = new_position;
     return S_OK;
@@ -511,14 +511,14 @@ public:
 
 
 struct FileIndexInfo {
-  wstring rel_path;
+  std::wstring rel_path;
   FindData find_data;
 };
-typedef map<UInt32, FileIndexInfo> FileIndexMap;
+typedef std::map<UInt32, FileIndexInfo> FileIndexMap;
 
 class PrepareUpdate: private ProgressMonitor {
 private:
-  wstring src_dir;
+  std::wstring src_dir;
   Archive& archive;
   FileIndexMap& file_index_map;
   UInt32& new_index;
@@ -528,24 +528,23 @@ private:
   Far::FileFilter* filter;
   bool& skipped_files;
 
-  const wstring* file_path;
+  const std::wstring* file_path;
 
   virtual void do_update_ui() {
     const unsigned c_width = 60;
-    wostringstream st;
-    st << left << setw(c_width) << fit_str(*file_path, c_width) << L'\n';
+    std::wostringstream st;
+    st << std::left << std::setw(c_width) << fit_str(*file_path, c_width) << L'\n';
     progress_text = st.str();
   }
 
-  void update_progress(const wstring& file_path) {
+  void update_progress(const std::wstring& file_path) {
     this->file_path = &file_path;
     update_ui();
   }
 
-  bool process_file(const wstring& sub_dir, const FindData& src_find_data, UInt32 dst_dir_index, UInt32& file_index) {
+  bool process_file(const std::wstring& sub_dir, const FindData& src_find_data, UInt32 dst_dir_index, UInt32& file_index) {
     if (filter) {
-      PluginPanelItem filter_data;
-      memzero(filter_data);
+      PluginPanelItem filter_data{};
       filter_data.FileAttributes = src_find_data.dwFileAttributes;
       filter_data.CreationTime = src_find_data.ftCreationTime;
       filter_data.LastAccessTime = src_find_data.ftLastAccessTime;
@@ -566,8 +565,8 @@ private:
     file_info.parent = dst_dir_index;
     file_info.name = src_find_data.cFileName;
     FileIndexRange fi_range = std::equal_range(archive.file_list_index.begin(), archive.file_list_index.end(), -1, [&] (UInt32 left, UInt32 right) -> bool {
-      const ArcFileInfo& fi_left = left == -1 ? file_info : archive.file_list[left];
-      const ArcFileInfo& fi_right = right == -1 ? file_info : archive.file_list[right];
+      const ArcFileInfo& fi_left = left == (UInt32)-1 ? file_info : archive.file_list[left];
+      const ArcFileInfo& fi_right = right == (UInt32)-1 ? file_info : archive.file_list[right];
       return fi_left < fi_right;
     });
     if (fi_range.first == fi_range.second) {
@@ -613,7 +612,7 @@ private:
     return true;
   }
 
-  bool process_file_enum(FileEnum& file_enum, const wstring& sub_dir, UInt32 dst_dir_index) {
+  bool process_file_enum(FileEnum& file_enum, const std::wstring& sub_dir, UInt32 dst_dir_index) {
     bool not_empty = false;
     while (true) {
       bool more = false;
@@ -625,8 +624,8 @@ private:
       UInt32 file_index;
       if (process_file(sub_dir, file_enum.data(), dst_dir_index, file_index)) {
         if (file_enum.data().is_dir()) {
-          wstring rel_path = add_trailing_slash(sub_dir) + file_enum.data().cFileName;
-          wstring full_path = add_trailing_slash(src_dir) + rel_path;
+          std::wstring rel_path = add_trailing_slash(sub_dir) + file_enum.data().cFileName;
+          std::wstring full_path = add_trailing_slash(src_dir) + rel_path;
           update_progress(full_path);
           DirList dir_list(full_path);
           if (!process_file_enum(dir_list, rel_path, file_index)) {
@@ -646,31 +645,53 @@ private:
   }
 
 public:
-  PrepareUpdate(const wstring& src_dir, const vector<wstring>& file_names, UInt32 dst_dir_index, Archive& archive, FileIndexMap& file_index_map, UInt32& new_index, OverwriteAction overwrite_action, bool& ignore_errors, ErrorLog& error_log, Far::FileFilter* filter, bool& skipped_files): ProgressMonitor(Far::get_msg(MSG_PROGRESS_SCAN_DIRS), false), src_dir(src_dir), archive(archive), file_index_map(file_index_map), new_index(new_index), overwrite_action(overwrite_action), ignore_errors(ignore_errors), error_log(error_log), filter(filter), skipped_files(skipped_files) {
+  PrepareUpdate(
+    const std::wstring& src_dir,
+    const std::vector<std::wstring>& file_names,
+    UInt32 dst_dir_index,
+    Archive& archive,
+    FileIndexMap& file_index_map,
+    UInt32& new_index,
+    OverwriteAction overwrite_action,
+    bool& ignore_errors,
+    ErrorLog& error_log,
+    Far::FileFilter* filter,
+    bool& skipped_files
+  ) : ProgressMonitor(Far::get_msg(MSG_PROGRESS_SCAN_DIRS), false),
+    src_dir(src_dir),
+    archive(archive),
+    file_index_map(file_index_map),
+    new_index(new_index),
+    ignore_errors(ignore_errors),
+    error_log(error_log),
+    overwrite_action(overwrite_action),
+    filter(filter),
+    skipped_files(skipped_files)
+  {
     skipped_files = false;
-    if (filter) filter->start();
+    if (filter)
+      filter->start();
     for (unsigned i = 0; i < file_names.size(); i++) {
-      wstring full_path = add_trailing_slash(src_dir) + file_names[i];
+      std::wstring full_path = add_trailing_slash(src_dir) + file_names[i];
       FileEnum file_enum(full_path);
       process_file_enum(file_enum, extract_file_path(file_names[i]), dst_dir_index);
     }
   }
 };
 
-
 class ArchiveUpdater: public IArchiveUpdateCallback, public ICryptoGetTextPassword2, public ComBase {
 private:
-  wstring src_dir;
-  wstring dst_dir;
+  std::wstring src_dir;
+  std::wstring dst_dir;
   UInt32 num_indices;
-  shared_ptr<FileIndexMap> file_index_map;
+  std::shared_ptr<FileIndexMap> file_index_map;
   const UpdateOptions& options;
-  shared_ptr<bool> ignore_errors;
-  shared_ptr<ErrorLog> error_log;
-  shared_ptr<ArchiveUpdateProgress> progress;
+  std::shared_ptr<bool> ignore_errors;
+  std::shared_ptr<ErrorLog> error_log;
+  std::shared_ptr<ArchiveUpdateProgress> progress;
 
 public:
-  ArchiveUpdater(const wstring& src_dir, const wstring& dst_dir, UInt32 num_indices, shared_ptr<FileIndexMap> file_index_map, const UpdateOptions& options, shared_ptr<bool> ignore_errors, shared_ptr<ErrorLog> error_log, shared_ptr<ArchiveUpdateProgress> progress): src_dir(src_dir), dst_dir(dst_dir), num_indices(num_indices), file_index_map(file_index_map), options(options), ignore_errors(ignore_errors), error_log(error_log), progress(progress) {
+  ArchiveUpdater(const std::wstring& src_dir, const std::wstring& dst_dir, UInt32 num_indices, std::shared_ptr<FileIndexMap> file_index_map, const UpdateOptions& options, std::shared_ptr<bool> ignore_errors, std::shared_ptr<ErrorLog> error_log, std::shared_ptr<ArchiveUpdateProgress> progress): src_dir(src_dir), dst_dir(dst_dir), num_indices(num_indices), file_index_map(file_index_map), options(options), ignore_errors(ignore_errors), error_log(error_log), progress(progress) {
   }
 
   UNKNOWN_IMPL_BEGIN
@@ -745,7 +766,7 @@ public:
     if (file_index_info.find_data.is_dir())
       return S_OK;
 
-    wstring file_path = add_trailing_slash(add_trailing_slash(src_dir) + file_index_info.rel_path) + file_index_info.find_data.cFileName;
+    std::wstring file_path = add_trailing_slash(add_trailing_slash(src_dir) + file_index_info.rel_path) + file_index_info.find_data.cFileName;
     progress->on_open_file(file_path, file_index_info.find_data.size());
 
     ComObject<ISequentialInStream> stream;
@@ -789,15 +810,54 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
   ComObject<ISetProperties> set_props;
   if (SUCCEEDED(out_arc->QueryInterface(IID_ISetProperties, reinterpret_cast<void**>(&set_props)))) {
     static const ExternalCodec defopts { L"", 1,9,0, 1,3,5,7,9, false };
+
+    std::wstring method;
+    if (options.arc_type == c_7z)
+      method = options.method;
+    else if (ArcAPI::formats().count(options.arc_type))
+      method = ArcAPI::formats().at(options.arc_type).name;
+
     auto method_params = &defopts;
     for (size_t i = 0; i < g_options.codecs.size(); ++i) {
-      if (options.method == g_options.codecs[i].name) {
+      if (method == g_options.codecs[i].name) {
         method_params = &g_options.codecs[i];
         break;
       }
     }
 
-    auto adv_params = split(options.advanced, L' ');
+    const auto is_digit = [](const std::wstring& n, const wchar_t up) {
+      return n.size() == 1 && n[0] >= L'0' && n[0] <= up;
+    };
+    const auto variant = [](const std::wstring& v) {
+      PropVariant var;
+      if (!v.empty()) {
+        wchar_t *endptr = nullptr;
+        UINT64 v64 = _wcstoui64(v.c_str(), &endptr, 10);
+        if (endptr && !*endptr) {
+          if (v64 >= 0 && v64 <= UINT_MAX)
+            var = static_cast<UInt32>(v64);
+          else
+            var = v64;
+        }
+        else
+          var = v;
+      }
+      return var;
+    };
+
+    auto adv = options.advanced;
+    bool ignore_method = false;
+    if (!adv.empty() && adv[0] == L'-') {
+      adv.erase(0, 1);
+      if (!adv.empty() && adv[0] == L'-') {
+        adv.erase(0, 1);
+        ignore_method = true;
+      }
+    }
+    else
+      adv = method_params->adv + L' ' + adv;
+
+    auto adv_params = split(adv, L' ');
     int adv_level = -1;
     bool adv_have_0 = false, adv_have_1 = false, adv_have_bcj = false, adv_have_qs = false;
     for (auto it = adv_params.begin(); it != adv_params.end(); ) {
@@ -814,21 +874,24 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
       else if (param == L"qs0" || param == L"qs-" || param == L"qs=off") {
         *it = param = L"qs=off"; adv_have_qs = true;
       }
-      else if (param.size() >= 2 && param[0] == L'x' && param[1] >= L'0' && param[1] <= L'9') {
+      else if (param.size() >= 2 && param[0] == L'x' && param[1] >= L'0' && param[1] <= L'9') { // xN
         *it = param.insert(1, 1, L'=');
       }
       else if (param.size() >= 3 && param[0] == L'm' && param[1] == 't' && param[2] >= L'1' && param[2] <= L'9') { // mtN
         *it = param.insert(2, 1, L'='); // mt=N
       }
+      else if (param.size() >= 3 && param[0] == L'y' && param[1] == 'x' && param[2] >= L'1' && param[2] <= L'9') { // yxN
+        *it = param.insert(2, 1, L'='); // yx=N
+      }
       auto sep = param.find(L'=');
-      if (sep == wstring::npos || sep == 0) { // process only "param=value" strings
+      if (param.empty() || sep == 0) {
         it = adv_params.erase(it);
         continue;
       }
-      else {
+      else if (sep != std::wstring::npos) {
         auto name = param.substr(0, sep);
         auto value = param.substr(sep + 1);
-        if (0 == _wcsicmp(name.data(), L"x")) {
+        if (0 == _wcsicmp(name.c_str(), L"x")) {
           it = adv_params.erase(it);
           if (!value.empty() && value[0] >= L'0' && value[0] <= L'9')
             adv_level = static_cast<int>(str_to_uint(value));
@@ -836,8 +899,8 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
         }
         adv_have_0 = adv_have_0 || name == L"0";
         adv_have_1 = adv_have_0 || name == L"1";
-        if (name.size() == 1 && name[0] >= L'0' && name[0] <= '9' && value.size() >= 3)
-          adv_have_bcj = adv_have_bcj || 0 == _wcsicmp(value.substr(0,3).data(), L"BCJ");
+        if (is_digit(name, L'9') && value.size() >= 3)
+          adv_have_bcj = adv_have_bcj || 0 == _wcsicmp(value.substr(0,3).c_str(), L"BCJ");
       }
       it++;
     }
@@ -862,16 +925,18 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
         level = method_params->maxL;
     }
 
-    vector<wstring> names;
-    vector<PropVariant> values;
+    std::vector<std::wstring> names;
+    std::vector<PropVariant> values;
     int n_01 = 0;
 
     if (options.arc_type == c_7z) {
-      names.push_back(L"0"); values.push_back(options.method);
-      n_01 = 1;
-      if (method_params->bcj_only && !adv_have_bcj) {
+      if (!ignore_method) {
+        names.push_back(L"0"); values.push_back(method);
+        ++n_01;
+      }
+      if (method_params->bcj_only && !adv_have_bcj && !ignore_method) {
         names.push_back(L"1"); values.push_back(L"BCJ");
-        n_01 = 2;
+        ++n_01;
       }
       names.push_back(L"x"); values.push_back(level);
       if (level != 0) {
@@ -883,39 +948,49 @@ void Archive::set_properties(IOutArchive* out_arc, const UpdateOptions& options)
         }
       }
     }
-    else if (options.arc_type == c_zip || options.arc_type == c_gzip || options.arc_type == c_xz) {
+    else if (options.arc_type != c_bzip2 || level != 0) {
       names.push_back(L"x"); values.push_back(level);
-    }
-    else if (options.arc_type == c_bzip2) {
-      if (level != 0) {
-        names.push_back(L"x"); values.push_back(level);
-      }
     }
 
     int n_shift = (adv_have_0 || adv_have_1) ? n_01 : 0;
     for (const auto& param : adv_params) {
       auto sep = param.find(L'=');
-      wstring name = param.substr(0, sep);
-      wstring value = param.substr(sep + 1);
-      if (n_shift && name.size() == 1 && name[0] >= L'0' && name[0] <= '7')
+      std::wstring name = sep != std::wstring::npos ? param.substr(0, sep) : param;
+      std::wstring value = sep != std::wstring::npos ? param.substr(sep + 1) : std::wstring();
+      if (n_shift && is_digit(name, L'7'))
         name[0] = static_cast<wchar_t>(name[0] + n_shift);
       bool found = false;
       unsigned i = 0;
       for (const auto& n : names) {
-        if (0 == _wcsicmp(n.data(), name.data())) {
+        std::wstring v = values[i].is_str() ? values[i].get_str() : std::wstring();
+        if (0 == _wcsicmp(n.c_str(), name.c_str()) || ((int)i < n_01 && is_digit(n,L'9') && is_digit(name,L'9') && !v.empty() && substr_match(upcase(value), 0, upcase(v).c_str()))) {
           found = true;
-          values[i] = value;
+          values[i] = variant(value);
           break;
         }
         ++i;
       }
       if (!found) {
         names.push_back(name);
-        values.push_back(value);
+        values.push_back(variant(value));
       }
     }
 
-    vector<const wchar_t*> name_ptrs;
+    // normalize {N}=... parameter names (start from '0', no gaps): {'1' '5' '3'} -> {'0' '2' '1'}
+    //
+    int gaps[10] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    for (const auto& n : names)
+      if (is_digit(n,L'9'))
+        gaps[n[0] - L'0'] = 0;
+    int gap = 0;
+    for (int i = 0; i < 10; ++i) {
+      auto t = gaps[i]; gaps[i] = gap; gap += t;
+    }
+    for (size_t i = 0; i < names.size(); ++i)
+      if (is_digit(names[i],L'9'))
+        names[i][0] = static_cast<wchar_t>(names[i][0] - gaps[names[i][0]-L'0']);
+
+    std::vector<const wchar_t*> name_ptrs;
     name_ptrs.reserve(names.size());
     for (unsigned i = 0; i < names.size(); i++) {
       name_ptrs.push_back(names[i].c_str());
@@ -930,21 +1005,21 @@ private:
   bool& ignore_errors;
   ErrorLog& error_log;
 
-  const wstring* file_path;
+  const std::wstring* file_path;
 
   virtual void do_update_ui() {
     const unsigned c_width = 60;
-    wostringstream st;
-    st << left << setw(c_width) << fit_str(*file_path, c_width) << L'\n';
+    std::wostringstream st;
+    st << std::left << std::setw(c_width) << fit_str(*file_path, c_width) << L'\n';
     progress_text = st.str();
   }
 
-  void update_progress(const wstring& file_path) {
+  void update_progress(const std::wstring& file_path) {
     this->file_path = &file_path;
     update_ui();
   }
 
-  void delete_src_file(const wstring& file_path) {
+  void delete_src_file(const std::wstring& file_path) {
     update_progress(file_path);
     RETRY_OR_IGNORE_BEGIN
     try {
@@ -959,11 +1034,11 @@ private:
     RETRY_OR_IGNORE_END(ignore_errors, error_log, *this)
   }
 
-  void delete_src_dir(const wstring& dir_path) {
+  void delete_src_dir(const std::wstring& dir_path) {
     {
       DirList dir_list(dir_path);
       while (dir_list.next()) {
-        wstring path = add_trailing_slash(dir_path) + dir_list.data().cFileName;
+        std::wstring path = add_trailing_slash(dir_path) + dir_list.data().cFileName;
         update_progress(path);
         if (dir_list.data().is_dir())
           delete_src_dir(path);
@@ -986,9 +1061,9 @@ private:
   }
 
 public:
-  DeleteSrcFiles(const wstring& src_dir, const vector<wstring>& file_names, bool& ignore_errors, ErrorLog& error_log): ProgressMonitor(Far::get_msg(MSG_PROGRESS_DELETE_FILES), false), ignore_errors(ignore_errors), error_log(error_log) {
+  DeleteSrcFiles(const std::wstring& src_dir, const std::vector<std::wstring>& file_names, bool& ignore_errors, ErrorLog& error_log): ProgressMonitor(Far::get_msg(MSG_PROGRESS_DELETE_FILES), false), ignore_errors(ignore_errors), error_log(error_log) {
     for (unsigned i = 0; i < file_names.size(); i++) {
-      wstring file_path = add_trailing_slash(src_dir) + file_names[i];
+      std::wstring file_path = add_trailing_slash(src_dir) + file_names[i];
       FindData find_data = File::get_find_data(file_path);
       if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
         delete_src_dir(file_path);
@@ -999,14 +1074,14 @@ public:
 };
 
 
-void Archive::create(const wstring& src_dir, const vector<wstring>& file_names, const UpdateOptions& options, shared_ptr<ErrorLog> error_log) {
+void Archive::create(const std::wstring& src_dir, const std::vector<std::wstring>& file_names, const UpdateOptions& options, std::shared_ptr<ErrorLog> error_log) {
   DisableSleepMode dsm;
 
-  shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
+  std::shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
   UInt32 new_index = 0;
   bool skipped_files = false;
 
-  shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
+  std::shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
   PrepareUpdate(src_dir, file_names, c_root_index, *this, *file_index_map, new_index, oaOverwrite, *ignore_errors, *error_log, options.filter.get(), skipped_files);
 
   ComObject<IOutArchive> out_arc;
@@ -1014,8 +1089,8 @@ void Archive::create(const wstring& src_dir, const vector<wstring>& file_names, 
 
   set_properties(out_arc, options);
 
-  shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(true, options.arc_path));
-  ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(src_dir, wstring(), 0, file_index_map, options, ignore_errors, error_log, progress));
+  std::shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(true, options.arc_path));
+  ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(src_dir, std::wstring(), 0, file_index_map, options, ignore_errors, error_log, progress));
 
   prepare_dst_dir(extract_file_path(options.arc_path));
   UpdateStream* stream_impl;
@@ -1039,24 +1114,24 @@ void Archive::create(const wstring& src_dir, const vector<wstring>& file_names, 
     DeleteSrcFiles(src_dir, file_names, *ignore_errors, *error_log);
 }
 
-void Archive::update(const wstring& src_dir, const vector<wstring>& file_names, const wstring& dst_dir, const UpdateOptions& options, shared_ptr<ErrorLog> error_log) {
+void Archive::update(const std::wstring& src_dir, const std::vector<std::wstring>& file_names, const std::wstring& dst_dir, const UpdateOptions& options, std::shared_ptr<ErrorLog> error_log) {
   DisableSleepMode dsm;
 
-  shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
+  std::shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
   UInt32 new_index = num_indices; // starting index for new files
   bool skipped_files = false;
 
-  shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
+  std::shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
   PrepareUpdate(src_dir, file_names, find_dir(dst_dir), *this, *file_index_map, new_index, options.overwrite, *ignore_errors, *error_log, options.filter.get(), skipped_files);
 
-  wstring temp_arc_name = get_temp_file_name();
+  std::wstring temp_arc_name = get_temp_file_name();
   try {
     ComObject<IOutArchive> out_arc;
     CHECK_COM(in_arc->QueryInterface(IID_IOutArchive, reinterpret_cast<void**>(&out_arc)));
 
     set_properties(out_arc, options);
 
-    shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(false, arc_path));
+    std::shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(false, arc_path));
     ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(src_dir, dst_dir, num_indices, file_index_map, options, ignore_errors, error_log, progress));
     ComObject<IOutStream> update_stream(new SimpleUpdateStream(temp_arc_name, progress));
 
@@ -1078,12 +1153,11 @@ void Archive::update(const wstring& src_dir, const vector<wstring>& file_names, 
     DeleteSrcFiles(src_dir, file_names, *ignore_errors, *error_log);
 }
 
-void Archive::create_dir(const wstring& dir_name, const wstring& dst_dir) {
+void Archive::create_dir(const std::wstring& dir_name, const std::wstring& dst_dir) {
   DisableSleepMode dsm;
 
-  shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
-  FileIndexInfo file_index_info;
-  memzero(file_index_info.find_data);
+  std::shared_ptr<FileIndexMap> file_index_map(new FileIndexMap());
+  FileIndexInfo file_index_info{};
   file_index_info.find_data.dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
   SYSTEMTIME sys_time;
   GetSystemTime(&sys_time);
@@ -1092,7 +1166,7 @@ void Archive::create_dir(const wstring& dir_name, const wstring& dst_dir) {
   file_index_info.find_data.ftCreationTime = file_time;
   file_index_info.find_data.ftLastAccessTime = file_time;
   file_index_info.find_data.ftLastWriteTime = file_time;
-  wcscpy(file_index_info.find_data.cFileName, dir_name.c_str());
+  std::wcscpy(file_index_info.find_data.cFileName, dir_name.c_str());
   (*file_index_map)[num_indices] = file_index_info;
 
   UpdateOptions options;
@@ -1105,16 +1179,16 @@ void Archive::create_dir(const wstring& dir_name, const wstring& dst_dir) {
   options.password = password;
   options.overwrite = oaOverwrite;
 
-  wstring temp_arc_name = get_temp_file_name();
+  std::wstring temp_arc_name = get_temp_file_name();
   try {
     ComObject<IOutArchive> out_arc;
     CHECK_COM(in_arc->QueryInterface(IID_IOutArchive, reinterpret_cast<void**>(&out_arc)));
 
-    shared_ptr<ErrorLog> error_log(new ErrorLog());
-    shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
+    std::shared_ptr<ErrorLog> error_log(new ErrorLog());
+    std::shared_ptr<bool> ignore_errors(new bool(options.ignore_errors));
 
-    shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(false, arc_path));
-    ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(wstring(), dst_dir, num_indices, file_index_map, options, ignore_errors, error_log, progress));
+    std::shared_ptr<ArchiveUpdateProgress> progress(new ArchiveUpdateProgress(false, arc_path));
+    ComObject<IArchiveUpdateCallback> updater(new ArchiveUpdater(std::wstring(), dst_dir, num_indices, file_index_map, options, ignore_errors, error_log, progress));
     ComObject<IOutStream> update_stream(new SimpleUpdateStream(temp_arc_name, progress));
 
     COM_ERROR_CHECK(out_arc->UpdateItems(update_stream, num_indices + 1, updater));

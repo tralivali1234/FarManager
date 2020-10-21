@@ -35,9 +35,20 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-class Viewer;
-
+// Internal:
 #include "windowsfwd.hpp"
+
+// Platform:
+
+// Common:
+#include "common/function_ref.hpp"
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+class Viewer;
 
 class Manager: noncopyable
 {
@@ -48,12 +59,12 @@ public:
 		Key(): m_Event(), m_FarKey(0), m_EventFilled(false) {}
 		explicit Key(int Key);
 		Key(unsigned int Key, const INPUT_RECORD& Event): m_Event(Event), m_FarKey(Key), m_EventFilled(true) {}
-		const INPUT_RECORD& Event(void)const {return m_Event;}
-		bool IsEvent(void)const {return m_EventFilled;}
-		bool IsReal(void)const;
+		const INPUT_RECORD& Event() const {return m_Event;}
+		bool IsEvent() const {return m_EventFilled;}
+		bool IsReal() const;
 		Key& operator=(unsigned int Key);
 		Key& operator&=(unsigned int Key);
-		unsigned int operator()(void) const {return m_FarKey;}
+		unsigned int operator()() const {return m_FarKey;}
 
 	private:
 		INPUT_RECORD m_Event;
@@ -64,24 +75,24 @@ public:
 
 	Manager();
 
-	enum DirectionType
+	enum class direction
 	{
-		PreviousWindow,
-		NextWindow
+		previous,
+		next
 	};
 
 	void InitDesktop();
 
 	// Эти функции можно безопасно вызывать практически из любого места кода
 	// они как бы накапливают информацию о том, что нужно будет сделать с окнами при следующем вызове Commit()
-	void InsertWindow(const window_ptr& NewWindow);
+	void InsertWindow(const window_ptr& Inserted);
 	void DeleteWindow(const window_ptr& Deleted = nullptr);
 	void ActivateWindow(const window_ptr& Activated);
 	void RefreshWindow(const window_ptr& Refreshed = nullptr);
 	void ReplaceWindow(const window_ptr& Old, const window_ptr& New);
 	void ModalDesktopWindow();
 	void UnModalDesktopWindow();
-	void CallbackWindow(const std::function<void(void)>& Callback);
+	void CallbackWindow(const std::function<void()>& Callback);
 	//! Функции для запуска модальных окон.
 	void ExecuteWindow(const window_ptr& Executed);
 	//! Входит в новый цикл обработки событий
@@ -96,20 +107,20 @@ public:
 	Возвращает TRUE, если все закрыли и можно выходить из фара.
 	*/
 	bool ExitAll();
-	size_t GetWindowCount()const { return m_windows.size(); }
+	size_t GetWindowCount() const { return m_windows.size(); }
 	int  GetWindowCountByType(int Type);
-	/*$ 26.06.2001 SKV
-	Для вызова через ACTL_COMMIT
+	/*
+	This method can execute any far or plugins code. Never call from non-reentrant code.
 	*/
 	void PluginCommit();
-	int CountWindowsWithName(const string& Name, bool IgnoreCase = true);
+	int CountWindowsWithName(string_view Name, bool IgnoreCase = true);
 	bool IsPanelsActive(bool and_not_qview = false, bool or_autocomplete = false) const;
-	window_ptr FindWindowByFile(int ModalType, const string& FileName, const wchar_t *Dir = nullptr);
+	window_ptr FindWindowByFile(int ModalType, string_view FileName);
 	void EnterMainLoop();
 	void ProcessMainLoop();
 	void ExitMainLoop(int Ask);
 	bool ProcessKey(Key key);
-	bool ProcessMouse(const MOUSE_EVENT_RECORD *me) const;
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) const;
 	void PluginsMenu() const; // вызываем меню по F11
 	void SwitchToPanels();
 	window_ptr GetCurrentWindow() const { return m_windows.empty() ? nullptr : m_windows.back(); }
@@ -119,7 +130,7 @@ public:
 	bool ManagerIsDown() const { return EndLoop; }
 	bool ManagerStarted() const { return StartManager; }
 	void InitKeyBar() const;
-	bool InModal(void) const { return m_NonModalSize < m_windows.size(); }
+	bool InModal() const { return m_NonModalSize < m_windows.size(); }
 	bool IsModal(size_t Index) const { return Index >= m_NonModalSize; }
 	void ResizeAllWindows();
 
@@ -131,8 +142,8 @@ public:
 	void UpdateMacroArea() const;
 
 	desktop* Desktop() const;
-	Viewer* GetCurrentViewer(void) const;
-	FileEditor* GetCurrentEditor(void) const;
+	Viewer* GetCurrentViewer() const;
+	FileEditor* GetCurrentEditor() const;
 	// BUGBUG, do we need this?
 	void ImmediateHide();
 	bool HaveAnyMessage() const;
@@ -143,7 +154,7 @@ private:
 		bool operator()(const window_ptr& lhs, const window_ptr& rhs) const;
 	};
 	using sorted_windows = std::set<window_ptr, window_comparer>;
-	sorted_windows GetSortedWindows(void) const;
+	sorted_windows GetSortedWindows() const;
 
 #if defined(SYSLOG)
 	friend void ManagerClass_Dump(const wchar_t *Title, FILE *fp);
@@ -152,7 +163,7 @@ private:
 	window_ptr WindowMenu(); //    вместо void SelectWindow(); // show window menu (F12)
 	bool HaveAnyWindow() const;
 	bool OnlyDesktop() const;
-	void Commit(void);         // завершает транзакцию по изменениям в контейнерах окон
+	void Commit();         // завершает транзакцию по изменениям в контейнерах окон
 	// Она в цикле вызывает себя, пока хотябы один из указателей отличен от nullptr
 	// Функции, "подмастерья начальника" - Commit'a
 	// Иногда вызываются не только из него и из других мест
@@ -175,22 +186,26 @@ private:
 	void CheckAndPushWindow(const window_ptr& Param, window_callback Callback);
 	void RedeleteWindow(const window_ptr& Deleted);
 	bool AddWindow(const window_ptr& Param);
-	void SwitchWindow(DirectionType Direction);
+	void SwitchWindow(direction Direction);
+
+	void WindowsChanged() { std::fill(m_windows_changed.begin(), m_windows_changed.end(), true); }
 
 	using windows = std::vector<window_ptr>;
-	void* GetCurrent(const std::function<void*(windows::const_reverse_iterator)>& Check) const;
+	void* GetCurrent(function_ref<void*(window_ptr const&)> Check) const;
+	windows::const_iterator SpecialWindow();
 	windows m_windows;
 	size_t m_NonModalSize;
 	bool EndLoop;            // Признак выхода из цикла
 	int ModalExitCode;
 	bool StartManager;
 	int m_DesktopModalled;
-	static std::atomic_long CurrentWindowType;
+	static inline std::atomic_long CurrentWindowType{-1};
 	std::queue<std::function<void()>> m_Queue;
 	std::vector<std::function<bool(const Key&)>> m_GlobalKeyHandlers;
 	std::unordered_map<window_ptr, bool*> m_Executed;
 	std::unordered_set<window_ptr> m_Added;
 	desktop_ptr m_Desktop;
+	std::vector<bool> m_windows_changed;
 };
 
 #endif // MANAGER_HPP_C3173B86_845B_4D8D_921F_803EA43A3C8A

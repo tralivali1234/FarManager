@@ -34,22 +34,33 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
 #include "platform.concurrency.hpp"
+#include "platform.security.hpp"
+
+// Common:
+#include "common/singleton.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 enum class lng : int;
 
 enum ELEVATION_MODE
 {
-	ELEVATION_MODIFY_REQUEST = 0x00000001,
-	ELEVATION_READ_REQUEST   = 0x00000002,
-	ELEVATION_USE_PRIVILEGES = 0xf0000000,
+	ELEVATION_MODIFY_REQUEST = 0_bit,
+	ELEVATION_READ_REQUEST   = 1_bit,
+	ELEVATION_USE_PRIVILEGES = 31_bit
 };
 
 enum ELEVATION_COMMAND: int;
 
 class elevation: public singleton<elevation>
 {
-	IMPLEMENTS_SINGLETON(elevation);
+	IMPLEMENTS_SINGLETON;
 
 public:
 	~elevation();
@@ -61,12 +72,13 @@ public:
 	bool delete_file(const string& Object);
 	bool copy_file(const string& From, const string& To, LPPROGRESS_ROUTINE ProgressRoutine, void* Data, BOOL* Cancel, DWORD Flags);
 	bool move_file(const string& From, const string& To, DWORD Flags);
+	bool replace_file(const string& To, const string& From, const string& Backup, DWORD Flags);
 	DWORD get_file_attributes(const string& Object);
 	bool set_file_attributes(const string& Object, DWORD FileAttributes);
 	bool create_hard_link(const string& Object, const string& Target, SECURITY_ATTRIBUTES* SecurityAttributes);
 
-	bool fCreateSymbolicLink(const string& Object, const string& Target, DWORD Flags);
-	int fMoveToRecycleBin(SHFILEOPSTRUCT& FileOpStruct);
+	bool fCreateSymbolicLink(string_view Object, string_view Target, DWORD Flags);
+	bool fMoveToRecycleBin(string_view Object);
 	bool fSetOwner(const string& Object, const string& Owner);
 
 	HANDLE create_file(const string& Object, DWORD DesiredAccess, DWORD ShareMode, SECURITY_ATTRIBUTES* SecurityAttributes, DWORD CreationDistribution, DWORD FlagsAndAttributes, HANDLE TemplateFile);
@@ -74,20 +86,24 @@ public:
 	bool detach_virtual_disk(const string& Object, VIRTUAL_STORAGE_TYPE& VirtualStorageType);
 	bool get_disk_free_space(const string& Object, unsigned long long* FreeBytesAvailableToCaller, unsigned long long* TotalNumberOfBytes, unsigned long long* TotalNumberOfFreeBytes);
 
+	os::security::descriptor get_file_security(string const& Object, SECURITY_INFORMATION RequestedInformation);
+	bool set_file_security(string const& Object, SECURITY_INFORMATION RequestedInformation, os::security::descriptor const& Descriptor);
+	bool reset_file_security(string const& Object);
+
 	class suppress
 	{
 	public:
 		NONCOPYABLE(suppress);
 
-		suppress(): m_owner(Global? &instance() : nullptr) { if (m_owner) ++m_owner->m_Suppressions; }
-		~suppress() { if (m_owner) --m_owner->m_Suppressions; }
+		suppress();
+		~suppress();
 
 	private:
 		elevation* m_owner;
 	};
 
 private:
-	elevation();
+	elevation() = default;
 
 	template<typename T>
 	T Read() const;
@@ -95,15 +111,8 @@ private:
 	template<typename T>
 	void Read(T& Data) const { Data = Read<T>(); }
 
-	static void Write() {}
-
-	template<typename T, typename... args>
-	void Write(const T& Data, args&&... Args) const;
-
-	template<typename T>
-	void WriteArg(const T& Data) const;
-
-	void WriteArg(const bytes_view& Data) const;
+	template<typename... args>
+	void Write(const args&... Args) const;
 
 	void RetrieveLastError() const;
 
@@ -111,30 +120,30 @@ private:
 	T RetrieveLastErrorAndResult() const;
 
 	bool Initialize();
-	bool ElevationApproveDlg(lng Why, const string& Object);
+	bool ElevationApproveDlg(lng Why, string_view Object);
 	void TerminateChildProcess() const;
 
 	template<typename T, typename F1, typename F2>
-	auto execute(lng Why, const string& Object, T Fallback, const F1& PrivilegedHander, const F2& ElevatedHandler);
+	auto execute(lng Why, string_view Object, T Fallback, const F1& PrivilegedHander, const F2& ElevatedHandler);
 
 	void progress_routine(LPPROGRESS_ROUTINE ProgressRoutine) const;
 
-	std::atomic_ulong m_Suppressions;
+	std::atomic_ulong m_Suppressions{};
 	os::handle m_Pipe;
 	os::handle m_Process;
 	os::handle m_Job;
 
-	bool m_IsApproved;
-	bool m_AskApprove;
-	bool m_Elevation;
-	bool m_DontAskAgain;
-	int m_Recurse;
+	bool m_IsApproved{};
+	bool m_AskApprove{true};
+	bool m_Elevation{};
+	bool m_DontAskAgain{};
+	int m_Recurse{};
 	os::critical_section m_CS;
 	string m_PipeName;
 };
 
 bool ElevationRequired(ELEVATION_MODE Mode, bool UseNtStatus = true);
-int ElevationMain(const wchar_t* guid, DWORD PID, bool UsePrivileges);
+int ElevationMain(string_view Uuid, DWORD PID, bool UsePrivileges);
 bool IsElevationArgument(const wchar_t* Argument);
 
 #endif // ELEVATION_HPP_19857862_0EE5_4709_B3E9_C7E50239C2E0

@@ -32,6 +32,8 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+//----------------------------------------------------------------------------
+
 template<typename... tuple_types>
 class split_duration: public std::tuple<tuple_types...>
 {
@@ -39,27 +41,55 @@ public:
 	template<typename duration_type>
 	explicit split_duration(duration_type Duration)
 	{
-		split<0, duration_type, tuple_types...>(Duration);
+		(..., (set_and_chop<tuple_types>(Duration)));
+	}
+
+	template<typename type>
+	[[nodiscard]]
+	type& get()
+	{
+		return std::get<type>(tuple_cast(*this));
+	}
+
+	template<typename type>
+	[[nodiscard]]
+	const type& get() const
+	{
+		return std::get<type>(tuple_cast(*this));
 	}
 
 private:
-	template<size_t Index, typename duration_type>
-	void split(duration_type) const
+	template<typename self_type>
+	static auto& tuple_cast(self_type& Self)
 	{
+		// This idiotic cast to std::tuple is for clang
+		using tuple_type = std::tuple<tuple_types...>;
+		using result_type = std::conditional_t<std::is_const_v<self_type>, const tuple_type, tuple_type>;
+
+		return static_cast<result_type&>(Self);
 	}
 
-	template<size_t Index, typename duration_type, typename arg, typename... args>
-	void split(duration_type Duration)
+	template<typename cast_type, typename duration_type>
+	void set_and_chop(duration_type& Duration)
 	{
-		const auto Value = std::chrono::duration_cast<arg>(Duration);
-		std::get<Index>(*this) = Value;
-		split<Index + 1, duration_type, args...>(Duration - Value);
+		auto& Element = get<cast_type>();
+		Element = std::chrono::duration_cast<cast_type>(Duration);
+		Duration -= Element;
 	}
 };
 
 namespace chrono
 {
 	using days = std::chrono::duration<int, std::ratio_multiply<std::ratio<24>, std::chrono::hours::period>>;
+}
+
+inline namespace literals
+{
+	[[nodiscard]]
+	constexpr auto operator"" _d(unsigned long long const Value) noexcept
+	{
+		return chrono::days(Value);
+	}
 }
 
 #endif // CHRONO_HPP_D4A71D62_47D4_45B1_B667_84D6E1E31A14

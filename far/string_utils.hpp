@@ -34,77 +34,98 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-inline bool IsEol(wchar_t x) { return x == L'\r' || x == L'\n'; }
+// Internal:
 
-inline bool IsBlankOrEos(wchar_t x) { return std::iswblank(x) || !x; }
+// Platform:
 
-const string& GetSpaces();
+// Common:
+#include "common/range.hpp"
 
-const string& GetEols();
+// External:
 
-const string& GetSpacesAndEols();
+//----------------------------------------------------------------------------
 
+
+[[nodiscard]]
+inline constexpr bool IsEol(wchar_t x) noexcept { return x == L'\r' || x == L'\n'; }
+
+[[nodiscard]]
+inline bool IsBlankOrEos(wchar_t x) noexcept { return std::iswblank(x) || !x; }
+
+[[nodiscard]]
+string_view GetSpaces();
+
+[[nodiscard]]
+string_view GetEols();
+
+[[nodiscard]]
 bool is_alpha(wchar_t Char);
+[[nodiscard]]
 bool is_alphanumeric(wchar_t Char);
 
+[[nodiscard]]
 bool is_upper(wchar_t Char);
+[[nodiscard]]
 bool is_lower(wchar_t Char);
 
 namespace inplace
 {
-	void upper(wchar_t* Str, size_t Size);
-	void lower(wchar_t* Str, size_t Size);
+	void upper(span<wchar_t> Str);
+	void lower(span<wchar_t> Str);
 
 	void upper(wchar_t* Str);
 	void lower(wchar_t* Str);
 
-	string& upper(string& Str, size_t Pos = 0, size_t Count = string::npos);
-	string& lower(string& Str, size_t Pos = 0, size_t Count = string::npos);
+	void upper(string& Str, size_t Pos = 0, size_t Count = string::npos);
+	void lower(string& Str, size_t Pos = 0, size_t Count = string::npos);
 }
 
+[[nodiscard]]
 wchar_t upper(wchar_t Char);
+[[nodiscard]]
 wchar_t lower(wchar_t Char);
 
+[[nodiscard]]
 string upper(string Str);
+[[nodiscard]]
 string lower(string Str);
 
-struct hash_icase
+[[nodiscard]]
+string upper(string_view Str);
+[[nodiscard]]
+string lower(string_view Str);
+
+struct [[nodiscard]] hash_icase_t
 {
-	size_t operator()(const string& Str) const;
+	[[nodiscard]]
+	size_t operator()(wchar_t Char) const;
+
+	[[nodiscard]]
+	size_t operator()(string_view Str) const;
 };
 
-struct equal_to_icase
+struct [[nodiscard]] equal_icase_t
 {
+	[[nodiscard]]
 	bool operator()(wchar_t Chr1, wchar_t Chr2) const;
-	bool operator()(const string_view& Str1, const string_view& Str2) const;
+
+	[[nodiscard]]
+	bool operator()(string_view Str1, string_view Str2) const;
 };
 
-struct less_icase
-{
-	bool operator()(wchar_t Chr1, wchar_t Chr2) const;
-	bool operator()(const string_view& Str1, const string_view& Str2) const;
-};
-
-bool equal_icase(const string_view& Str1, const string_view& Str2);
-bool starts_with_icase(const string_view& Str, const string_view& Prefix);
-bool ends_with_icase(const string_view& Str, const string_view& Suffix);
-bool contains_icase(const string_view& Str, const string_view& Token);
-
-int StrCmp(const wchar_t *s1, const wchar_t *s2);
-int StrCmpI(const wchar_t *s1, const wchar_t *s2);
-
-// deprecated, for pluginapi::apiStrCmpNI only
-int StrCmpNI(const wchar_t *s1, const wchar_t *s2, size_t n);
-
-int StrCmp(const string_view& Str1, const string_view& Str2);
-int StrCmpI(const string_view& Str1, const string_view& Str2);
-int StrCmpC(const string_view& Str1, const string_view& Str2);
-
-int NumStrCmp(const string_view& Str1, const string_view& Str2);
-int NumStrCmpI(const string_view& Str1, const string_view& Str2);
-int NumStrCmpC(const string_view& Str1, const string_view& Str2);
-
-using str_comparer = int(*)(const string_view&, const string_view&);
-str_comparer get_comparer(bool Numeric, bool CaseSensitive);
+[[nodiscard]]
+bool equal_icase(string_view Str1, string_view Str2);
+[[nodiscard]]
+bool starts_with_icase(string_view Str, string_view Prefix);
+[[nodiscard]]
+bool ends_with_icase(string_view Str, string_view Suffix);
+[[nodiscard]]
+size_t find_icase(string_view Str, string_view What, size_t Pos = 0);
+[[nodiscard]]
+size_t find_icase(string_view Str, wchar_t What, size_t Pos = 0);
+[[nodiscard]]
+bool contains_icase(string_view Str, string_view What);
+[[nodiscard]]
+bool contains_icase(string_view Str, wchar_t What);
 
 #endif // STRING_UTILS_HPP_82ECD8BE_D484_4023_AB42_21D93B2DF8B9

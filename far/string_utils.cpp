@@ -30,29 +30,30 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "string_utils.hpp"
 
-const string& GetSpaces()
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/preprocessor.hpp"
+#include "common/string_utils.hpp"
+#include "common/utility.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+string_view GetSpaces()
 {
-	// TODO: test for consistency with IsSpace()
-	static const auto Spaces = L" \t"s;
-	return Spaces;
+	return L" \t"sv;
 }
 
-const string& GetEols()
+string_view GetEols()
 {
-	// TODO: test for consistency with IsEol()
-	static const auto Eols = L"\r\n"s;
-	return Eols;
-}
-
-const string& GetSpacesAndEols()
-{
-	static const auto SpacesOrEols = GetSpaces() + GetEols();
-	return SpacesOrEols;
+	return L"\r\n"sv;
 }
 
 bool is_alpha(wchar_t Char)
@@ -87,291 +88,223 @@ wchar_t lower(wchar_t Char)
 	return Char;
 }
 
-void inplace::upper(wchar_t *Str, size_t Size)
+void inplace::upper(span<wchar_t> const Str)
 {
-	CharUpperBuff(Str, static_cast<DWORD>(Size));
+	CharUpperBuff(Str.data(), static_cast<DWORD>(Str.size()));
 }
 
-void inplace::lower(wchar_t *Str, size_t Size)
+void inplace::lower(span<wchar_t> const Str)
 {
-	CharLowerBuff(Str, static_cast<DWORD>(Size));
+	CharLowerBuff(Str.data(), static_cast<DWORD>(Str.size()));
 }
 
 void inplace::upper(wchar_t* Str)
 {
-	upper(Str, wcslen(Str));
+	upper({ Str, wcslen(Str) });
 }
 
 void inplace::lower(wchar_t* Str)
 {
-	lower(Str, wcslen(Str));
+	lower({ Str, wcslen(Str) });
 }
 
-string& inplace::upper(string& Str, size_t Pos, size_t Count)
+void inplace::upper(string& Str, size_t Pos, size_t Count)
 {
-	upper(&Str[Pos], Count == string::npos? Str.size() - Pos : Count);
-	return Str;
+	upper({ &Str[Pos], Count == string::npos? Str.size() - Pos : Count });
 }
 
-string& inplace::lower(string& Str, size_t Pos, size_t Count)
+void inplace::lower(string& Str, size_t Pos, size_t Count)
 {
-	lower(&Str[Pos], Count == string::npos? Str.size() - Pos : Count);
-	return Str;
+	lower({ &Str[Pos], Count == string::npos? Str.size() - Pos : Count });
 }
 
 string upper(string Str)
 {
-	return inplace::upper(Str, 0, string::npos);
+	inplace::upper(Str, 0, string::npos);
+	return Str;
 }
 
 string lower(string Str)
 {
-	return inplace::lower(Str, 0, string::npos);
+	inplace::lower(Str, 0, string::npos);
+	return Str;
 }
 
-size_t hash_icase::operator()(const string& Str) const
+string upper(string_view const Str)
+{
+	return upper(string(Str));
+}
+
+string lower(string_view const Str)
+{
+	return lower(string(Str));
+}
+
+size_t hash_icase_t::operator()(wchar_t const Char) const
+{
+	return make_hash(upper(Char));
+}
+
+size_t hash_icase_t::operator()(string_view const Str) const
 {
 	return make_hash(upper(Str));
 }
 
-bool equal_to_icase::operator()(wchar_t Chr1, wchar_t Chr2) const
+bool equal_icase_t::operator()(wchar_t Chr1, wchar_t Chr2) const
 {
 	return upper(Chr1) == upper(Chr2);
 }
 
-bool equal_to_icase::operator()(const string_view& Str1, const string_view& Str2) const
+bool equal_icase_t::operator()(const string_view Str1, const string_view Str2) const
 {
 	return equal_icase(Str1, Str2);
 }
 
-bool less_icase::operator()(wchar_t Chr1, wchar_t Chr2) const
+bool equal_icase(const string_view Str1, const string_view Str2)
 {
-	return upper(Chr1) < upper(Chr2);
+	return std::equal(ALL_CONST_RANGE(Str1), ALL_CONST_RANGE(Str2), equal_icase_t{});
 }
 
-bool less_icase::operator()(const string_view& Str1, const string_view& Str2) const
-{
-	return StrCmpI(Str1, Str2) < 0;
-}
-
-bool equal_icase(const string_view& Str1, const string_view& Str2)
-{
-	return std::equal(ALL_CONST_RANGE(Str1), ALL_CONST_RANGE(Str2), equal_to_icase{});
-}
-
-bool starts_with_icase(const string_view& Str, const string_view& Prefix)
+bool starts_with_icase(const string_view Str, const string_view Prefix)
 {
 	return Str.size() >= Prefix.size() && equal_icase(Str.substr(0, Prefix.size()), Prefix);
 }
 
-bool ends_with_icase(const string_view& Str, const string_view& Suffix)
+bool ends_with_icase(const string_view Str, const string_view Suffix)
 {
 	return Str.size() >= Suffix.size() && equal_icase(Str.substr(Str.size() - Suffix.size()), Suffix);
 }
 
-bool contains_icase(const string_view& Str, const string_view& Token)
+size_t find_icase(string_view const Str, string_view const What, size_t Pos)
 {
-	return std::search(ALL_CONST_RANGE(Str), ALL_CONST_RANGE(Token), equal_to_icase{}) != Str.cend();
+	if (Pos >= Str.size())
+		return Str.npos;
+
+	const auto It = std::search(Str.cbegin() + Pos, Str.cend(), ALL_CONST_RANGE(What), equal_icase_t{});
+	return It == Str.cend()? Str.npos : It - Str.cbegin();
 }
 
-int StrCmp(const wchar_t *s1, const wchar_t *s2)
+size_t find_icase(string_view const Str, wchar_t const What, size_t Pos)
 {
-	return CompareString(0, SORT_STRINGSORT, s1, -1, s2, -1) - 2;
+	if (Pos >= Str.size())
+		return Str.npos;
+
+	const auto It = std::find_if(Str.cbegin() + Pos, Str.cend(), [&](wchar_t const Char) { return equal_icase_t{}(What, Char); });
+	return It == Str.cend() ? Str.npos : It - Str.cbegin();
 }
 
-int StrCmpI(const wchar_t *s1, const wchar_t *s2)
+bool contains_icase(const string_view Str, const string_view What)
 {
-	return CompareString(0, SORT_STRINGSORT | NORM_IGNORECASE, s1, -1, s2, -1) - 2;
+	return find_icase(Str, What) != Str.npos;
 }
 
-// deprecated, for pluginapi::apiStrCmpNI only
-int StrCmpNI(const wchar_t *s1, const wchar_t *s2, size_t n)
+bool contains_icase(const string_view Str, wchar_t const What)
 {
-	return CompareString(0, NORM_STOP_ON_NULL | SORT_STRINGSORT | NORM_IGNORECASE, s1, static_cast<int>(n), s2, static_cast<int>(n)) - 2;
+	return find_icase(Str, What) != Str.npos;
 }
 
-int StrCmp(const string_view& Str1, const string_view& Str2)
-{
-	return CompareString(0, SORT_STRINGSORT, Str1.raw_data(), static_cast<int>(Str1.size()), Str2.raw_data(), static_cast<int>(Str2.size())) - 2;
-}
 
-int StrCmpI(const string_view& Str1, const string_view& Str2)
-{
-	return CompareString(0, SORT_STRINGSORT | NORM_IGNORECASE, Str1.raw_data(), static_cast<int>(Str1.size()), Str2.raw_data(), static_cast<int>(Str2.size())) - 2;
-}
+#ifdef ENABLE_TESTS
 
-static int per_char_compare(const string_view& Str1, const string_view& Str2, const std::function<int(const wchar_t*&, const wchar_t*, const wchar_t*&, const wchar_t*)>& Comparer)
-{
-	auto Iterator = std::make_pair(Str1.cbegin(), Str2.cbegin());
-	const auto End = std::make_pair(Str1.cend(), Str2.cend());
+#include "testing.hpp"
 
-	while (Iterator.first != End.first && Iterator.second != End.second)
+TEST_CASE("string.spaces")
+{
+	for (const auto& i: GetSpaces())
 	{
-		if (const auto Result = Comparer(Iterator.first, End.first, Iterator.second, End.second))
-			return Result < 0? -1 : 1;
+		REQUIRE(std::iswblank(i));
+	}
+}
+
+TEST_CASE("string.eols")
+{
+	for (const auto& i: GetEols())
+	{
+		REQUIRE(IsEol(i));
+	}
+}
+
+TEST_CASE("string.traits")
+{
+	REQUIRE(is_alpha(L'A'));
+	REQUIRE(!is_alpha(L'1'));
+
+	REQUIRE(is_alphanumeric(L'0'));
+	REQUIRE(!is_alphanumeric(L'?'));
+
+	REQUIRE(is_upper(L'A'));
+	REQUIRE(!is_upper(L'a'));
+
+	REQUIRE(is_lower(L'a'));
+	REQUIRE(!is_lower(L'A'));
+
+	REQUIRE(!is_upper(L'1'));
+	REQUIRE(!is_lower(L'1'));
+}
+
+TEST_CASE("string.case")
+{
+	REQUIRE(upper(L'a') == L'A');
+	REQUIRE(upper(L'A') == L'A');
+
+	REQUIRE(upper(L"foo"sv) == L"FOO"sv);
+	REQUIRE(upper(L"FOO"sv) == L"FOO"sv);
+
+	REQUIRE(lower(L'A') == L'a');
+	REQUIRE(lower(L'a') == L'a');
+
+	REQUIRE(lower(L"FOO"sv) == L"foo"sv);
+	REQUIRE(lower(L"foo"sv) == L"foo"sv);
+}
+
+TEST_CASE("string.utils")
+{
+	for (const auto& i: GetSpaces())
+	{
+		REQUIRE(std::isblank(i));
 	}
 
-	if (Iterator == End)
+	for (const auto& i: GetEols())
 	{
-		const auto Size1 = Iterator.first - Str1.cbegin();
-		const auto Size2 = Iterator.second - Str2.cbegin();
-
-		if (Size1 == Size2)
-			return 0;
-
-		return Size1 < Size2? -1 : 1;
+		REQUIRE(IsEol(i));
 	}
-
-	return Iterator.first == End.first? -1 : 1;
 }
 
-static auto create_alt_sort_table()
+TEST_CASE("string.utils.hash")
 {
-	static_assert(sizeof(wchar_t) == 2, "4 GB for a sort table is too much, rewrite it.");
-	static const auto TableSize = std::numeric_limits<wchar_t>::max() + 1;
-	static wchar_t alt_sort_table[TableSize];
-	std::vector<wchar_t> chars(TableSize);
-	std::iota(ALL_RANGE(chars), 0);
-	std::sort(chars.begin() + 1, chars.end(), [](wchar_t a, wchar_t b) { return StrCmp({ &a, 1 }, { &b, 1 }) < 0; });
+	const hash_icase_t hash;
+	REQUIRE(hash(L'A') == hash(L'a'));
+	REQUIRE(hash(L'A') != hash(L'B'));
+	REQUIRE(hash(L"fooBAR"sv) == hash(L"FOObar"sv));
+	REQUIRE(hash(L"fooBAR"sv) != hash(L"Banana"sv));
+}
 
-	int u_beg = 0, u_end = 0xffff;
-	for (int ic=0; ic < 0x10000; ++ic)
+TEST_CASE("string.utils.icase")
+{
+	const auto npos = string_view::npos;
+
+	static const struct
 	{
-		if (chars[ic] == L'a')
-		{
-			u_beg = ic;
-			break;
-		}
-		alt_sort_table[chars[ic]] = static_cast<wchar_t>(ic);
+		string_view Str, Token;
+		size_t Pos;
 	}
-
-	for (int ic=0xffff; ic > u_beg; --ic)
+	Tests[]
 	{
-		if (is_upper(chars[ic]))
-		{
-			u_end = ic;
-			break;
-		}
-		alt_sort_table[chars[ic]] = static_cast<wchar_t>(ic);
-	}
-	assert(u_beg > 0 && u_beg < u_end && u_end < 0xffff);
-
-	int cc = u_beg;
-	for (int ic=u_beg; ic <= u_end; ++ic) // uppercase first
-	{
-		if (is_upper(chars[ic]))
-			alt_sort_table[chars[ic]] = static_cast<wchar_t>(cc++);
-	}
-	for (int ic=u_beg; ic <= u_end; ++ic) // than not uppercase
-	{
-		if (!is_upper(chars[ic]))
-			alt_sort_table[chars[ic]] = static_cast<wchar_t>(cc++);
-	}
-	assert(cc == u_end+1);
-	return alt_sort_table;
-}
-
-int StrCmpC(const string_view& Str1, const string_view& Str2)
-{
-	static const auto alt_sort_table = create_alt_sort_table();
-
-	return per_char_compare(Str1, Str2, [](const wchar_t*& It1, const wchar_t*, const wchar_t*& It2, const wchar_t*)
-	{
-		const auto Result = static_cast<int>(alt_sort_table[*It1]) - static_cast<int>(alt_sort_table[*It2]);
-		++It1;
-		++It2;
-		return Result < 0? -1 : Result > 0? 1 : 0;
-	});
-}
-
-static int NumStrCmp_base(const string_view& Str1, const string_view& Str2, int(*Comparer)(const string_view&, const string_view&))
-{
-	return per_char_compare(Str1, Str2, [&](const wchar_t*& It1, const wchar_t* End1, const wchar_t*& It2, const wchar_t* End2)
-	{
-		if (std::iswdigit(*It1) && std::iswdigit(*It2))
-		{
-			auto NotZero = [](wchar_t Char) { return Char != L'0'; };
-
-			It1 = std::find_if(It1, End1, NotZero);
-			It2 = std::find_if(It2, End2, NotZero);
-
-			if (It1 == End1 && It2 == End2)
-				return 0;
-
-			// compare numbers
-			int Result = 0;
-			while (It1 != End1 && It2 != End2 && std::iswdigit(*It1) && std::iswdigit(*It2))
-			{
-				if (!Result && *It1 != *It2)
-					Result = *It1 < *It2? -1 : 1;
-
-				++It1;
-				++It2;
-			}
-
-			const auto EndOrNonDigit1 = It1 == End1 || !std::iswdigit(*It1);
-			const auto EndOrNonDigit2 = It2 == End2 || !std::iswdigit(*It2);
-
-			if (EndOrNonDigit1 && EndOrNonDigit2)
-				return Result;
-
-			return EndOrNonDigit1? -1 : 1;
-		}
-
-		return Comparer({ It1++, 1 }, { It2++, 1 });
-	});
-}
-
-int NumStrCmp(const string_view& Str1, const string_view& Str2)
-{
-	return NumStrCmp_base(Str1, Str2, StrCmp);
-}
-
-int NumStrCmpI(const string_view& Str1, const string_view& Str2)
-{
-	return NumStrCmp_base(Str1, Str2, StrCmpI);
-}
-
-int NumStrCmpC(const string_view& Str1, const string_view& Str2)
-{
-	return NumStrCmp_base(Str1, Str2, StrCmpC);
-}
-
-str_comparer get_comparer(bool Numeric, bool CaseSensitive)
-{
-	using comparer_type = int(*)(const string_view&, const string_view&);
-	static const comparer_type Comparers[][2] =
-	{
-		{ StrCmpI, StrCmpC },
-		{ NumStrCmpI, NumStrCmpC },
+		{ {},                    {},                npos, },
+		{ {},                    L"abc"sv,          npos, },
+		{ L"foobar"sv,           {},                0,    },
+		{ L"foobar"sv,           L"FOOBAR"sv,       0,    },
+		{ L"foobar"sv,           L"foobar1"sv,      npos, },
+		{ L"foobar"sv,           L"foo"sv,          0,    },
+		{ L"foobar"sv,           L"FOO"sv,          0,    },
+		{ L"foobar"sv,           L"OoB"sv,          1,    },
+		{ L"foobar"sv,           L"BaR"sv,          3,    },
 	};
 
-	return Comparers[Numeric? 1 : 0][CaseSensitive? 1 : 0];
+	for (const auto& i: Tests)
+	{
+		REQUIRE(find_icase(i.Str, i.Token) == i.Pos);
+		REQUIRE(contains_icase(i.Str, i.Token) == (i.Pos != npos));
+	}
 }
-
-SELF_TEST(
-	assert(NumStrCmp(L"", L"") == 0);
-	assert(NumStrCmp(L"", L"a") < 0);
-	assert(NumStrCmp(L"a", L"a") == 0);
-
-	assert(NumStrCmp(L"0", L"1") < 0);
-	assert(NumStrCmp(L"0", L"00") < 0);
-	assert(NumStrCmp(L"1", L"00") > 0);
-	assert(NumStrCmp(L"10", L"1") > 0);
-	assert(NumStrCmp(L"10", L"2") > 0);
-	assert(NumStrCmp(L"10", L"0100") < 0);
-	assert(NumStrCmp(L"1", L"001") < 0);
-
-	assert(NumStrCmp(L"10a", L"2b") > 0);
-	assert(NumStrCmp(L"10a", L"0100b") < 0);
-	assert(NumStrCmp(L"a1a", L"a001a") < 0);
-	assert(NumStrCmp(L"a1b2c", L"a1b2c") == 0);
-	assert(NumStrCmp(L"a01b2c", L"a1b002c") < 0);
-	assert(NumStrCmp(L"a01b3c", L"a1b002") > 0);
-
-	assert(NumStrCmp(L"10", L"01") > 0);
-	assert(!NumStrCmp(L"01", L"01"));
-
-	assert(NumStrCmp(L"A1", L"a2") > 0);
-	assert(NumStrCmpI(L"A1", L"a2") < 0);
-)
+#endif

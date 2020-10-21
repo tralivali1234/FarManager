@@ -35,6 +35,21 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/2d/point.hpp"
+#include "common/function_ref.hpp"
+#include "common/range.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct FarKey;
+
 enum
 {
 	MOUSE_ANY_BUTTON_PRESSED =
@@ -60,10 +75,8 @@ struct FarKeyboardState
 	bool PrevLButtonPressed;
 	bool PrevRButtonPressed;
 	bool PrevMButtonPressed;
-	SHORT PrevMouseX;
-	SHORT PrevMouseY;
-	SHORT MouseX;
-	SHORT MouseY;
+	point MousePrevPos;
+	point MousePos;
 	int PreMouseEventFlags;
 	int MouseEventFlags;
 	bool ReturnAltValue;   // только что был ввод Alt-Цифира?
@@ -90,29 +103,51 @@ void InitKeysArray();
 bool KeyToKeyLayoutCompare(int Key, int CompareKey);
 int KeyToKeyLayout(int Key);
 
+class keyboard_repeat_emulation
+{
+public:
+	keyboard_repeat_emulation();
+	~keyboard_repeat_emulation();
+
+	void reset() const;
+	bool signaled() const;
+
+private:
+	class implementation;
+	std::unique_ptr<implementation> m_Impl;
+};
+
 // возвращает: 1 - LeftPressed, 2 - Right Pressed, 3 - Middle Pressed, 0 - none
 DWORD IsMouseButtonPressed();
-int TranslateKeyToVK(int Key,int &VirtKey,int &ControlState,INPUT_RECORD *rec=nullptr);
-int KeyNameToKey(const string& Name);
-bool InputRecordToText(const INPUT_RECORD *Rec, string &strKeyText);
-bool KeyToText(int Key, string &strKeyText);
-bool KeyToLocalizedText(int Key, string &strKeyText);
+bool while_mouse_button_pressed(function_ref<bool(DWORD)> Action);
+int TranslateKeyToVK(int Key, INPUT_RECORD* Rec = nullptr);
+int KeyNameToKey(string_view Name);
+string InputRecordToText(const INPUT_RECORD *Rec);
+string KeyToText(unsigned int Key);
+string KeyToLocalizedText(unsigned int Key);
+string KeysListToLocalizedText(span<unsigned int const> Keys);
+template<typename... args>
+string KeysToLocalizedText(args const... Keys)
+{
+	return KeysListToLocalizedText({ Keys... });
+}
 unsigned int InputRecordToKey(const INPUT_RECORD *Rec);
 bool KeyToInputRecord(int Key, INPUT_RECORD *Rec);
-void ProcessKeyToInputRecord(int Key, unsigned int dwControlState, INPUT_RECORD *Rec);
 void FarKeyToInputRecord(const FarKey& Key,INPUT_RECORD* Rec);
 DWORD GetInputRecord(INPUT_RECORD *rec,bool ExcludeMacro=false,bool ProcessMouse=false,bool AllowSynchro=true);
 DWORD GetInputRecordNoMacroArea(INPUT_RECORD *rec,bool AllowSynchro=true);
 DWORD PeekInputRecord(INPUT_RECORD *rec,bool ExcludeMacro=true);
 bool IsRepeatedKey();
-unsigned int ShieldCalcKeyCode(const INPUT_RECORD* rec, bool RealKey, bool* NotMacros = nullptr);
-unsigned int CalcKeyCode(const INPUT_RECORD* rec, bool RealKey, bool* NotMacros = nullptr);
-DWORD WaitKey(DWORD KeyWait=(DWORD)-1,DWORD delayMS=0,bool ExcludeMacro=true);
+unsigned int ShieldCalcKeyCode(INPUT_RECORD* rec, bool RealKey, bool* NotMacros = nullptr);
+unsigned int CalcKeyCode(INPUT_RECORD* rec, bool RealKey, bool* NotMacros = nullptr);
+DWORD WaitKey(DWORD KeyWait = static_cast<DWORD>(-1), DWORD delayMS = 0, bool ExcludeMacro = true);
 int SetFLockState(UINT vkKey, int State);
 bool WriteInput(int Key);
 int IsNavKey(DWORD Key);
 int IsShiftKey(DWORD Key);
 bool IsModifKey(DWORD Key);
+bool IsInternalKeyReal(unsigned int Key);
+bool IsCharKey(unsigned int Key);
 bool CheckForEsc();
 bool CheckForEscSilent();
 bool ConfirmAbortOp();

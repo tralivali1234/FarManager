@@ -35,6 +35,18 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+class FileList;
+
 void PrintFiles(FileList* SrcPanel);
 
 #endif // PRINT_HPP_5CD92351_EF4B_45BE_A165_4C13312E85EB

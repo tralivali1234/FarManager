@@ -34,27 +34,23 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "enumerator.hpp"
 
+//----------------------------------------------------------------------------
+
 // Enumerator for string1\0string2\0string3\0...stringN\0\0
 
-namespace detail
-{
-	inline auto length(const char* Str) { return strlen(Str); }
-	inline auto length(const wchar_t* Str) { return wcslen(Str); }
-}
-
 template<class char_type>
+[[nodiscard]]
 auto enum_substrings(const char_type* Str)
 {
-	const char_type* Iterator = nullptr;
-	using value_type = basic_string_view<char_type>;
-	return make_inline_enumerator<value_type>([Iterator, Str](size_t Index, value_type& Value) mutable
+	using value_type = std::basic_string_view<char_type>;
+	return make_inline_enumerator<value_type>([Iterator = Str, Str](const bool Reset, value_type& Value) mutable
 	{
-		if (!Index)
+		if (Reset)
 			Iterator = Str;
 		else
 			++Iterator;
 
-		const auto NewIterator = Iterator + detail::length(Iterator);
+		const auto NewIterator = Iterator + std::char_traits<char_type>::length(Iterator);
 
 		if (NewIterator == Iterator)
 			return false;

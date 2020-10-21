@@ -35,6 +35,18 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/function_ref.hpp"
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 class Dialog;
 class HistoryConfig;
 class VMenu2;
@@ -73,26 +85,26 @@ enum history_return_type
 class History: noncopyable
 {
 public:
-	History(history_type TypeHistory, string HistoryName, const BoolOption& EnableSave);
+	History(history_type TypeHistory, string_view HistoryName, const BoolOption& EnableSave);
 
-	void AddToHistory(const string& Str, history_record_type Type = HR_DEFAULT, const GUID* Guid=nullptr, const wchar_t *File=nullptr, const wchar_t *Data=nullptr, bool SaveForbid=false);
-	history_return_type Select(const string& Title, const wchar_t *HelpTopic, string &strStr, history_record_type &Type, GUID* Guid=nullptr, string *File=nullptr, string *Data=nullptr);
-	history_return_type Select(VMenu2 &HistoryMenu, int Height, Dialog *Dlg, string &strStr);
+	void AddToHistory(string_view Str, history_record_type Type = HR_DEFAULT, const UUID* Uuid = nullptr, string_view File = {}, string_view Data = {});
+	history_return_type Select(string_view Title, string_view HelpTopic, string& strStr, history_record_type& Type, UUID* Uuid = nullptr, string* File = nullptr, string* Data = nullptr);
+	history_return_type Select(VMenu2& HistoryMenu, int Height, Dialog const* Dlg, string& strStr);
 	string GetPrev();
 	string GetNext();
 	bool GetSimilar(string &strStr, int LastCmdPartLength, bool bAppend=false);
-	std::vector<std::tuple<string, unsigned long long, bool>> GetAllSimilar(const string& Str) const;
+	void GetAllSimilar(string_view Str, function_ref<void(string_view Name, unsigned long long Id, bool IsLocked)> Callback) const;
 	void SetAddMode(bool EnableAdd, int RemoveDups, bool KeepSelectedPos);
 	void ResetPosition() { m_CurrentItem = 0; }
 	bool DeleteIfUnlocked(unsigned long long id);
-	bool ReadLastItem(const string& HistoryName, string &strStr) const;
+	bool ReadLastItem(string_view HistoryName, string &strStr) const;
 	bool IsOnTop() const { return !m_CurrentItem; }
 
 	static void CompactHistory();
 
 private:
 	bool EqualType(history_record_type Type1, history_record_type Type2) const;
-	history_return_type ProcessMenu(string &strStr, GUID* Guid, string *File, string *Data, const wchar_t *Title, VMenu2 &HistoryMenu, int Height, history_record_type& Type, Dialog *Dlg);
+	history_return_type ProcessMenu(string& strStr, UUID* Uuid, string* File, string* Data, string_view Title, VMenu2& HistoryMenu, int Height, history_record_type& Type, const Dialog* Dlg);
 	const std::unique_ptr<HistoryConfig>& HistoryCfgRef() const;
 
 	history_type m_TypeHistory;

@@ -35,12 +35,38 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-bool SubstFileName(const wchar_t *DlgTitle,
-                  string &strStr, const string& Name, const string& ShortName,
-                  string *strListName=nullptr,
-                  string *strAnotherListName = nullptr,
-                  string *strShortListName=nullptr,
-                  string *strAnotherShortListName=nullptr,
-                  int IgnoreInput=FALSE,const wchar_t *CmdLineDir=nullptr);
+// Internal:
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+class delayed_deleter;
+
+class subst_context
+{
+public:
+	subst_context(string_view NameStr, string_view ShortNameStr);
+
+	string_view Name;
+	string_view ShortName;
+	string_view Path;
+
+	std::unordered_map<string, string> mutable Variables;
+};
+
+bool SubstFileName(
+	string &Str,
+	const subst_context& Context,
+	delayed_deleter* ListNames = nullptr,
+	bool* PreserveLongName = nullptr,
+	bool IgnoreInput = false,
+	string_view DlgTitle = {},
+	bool EscapeAmpersands = false
+);
 
 #endif // FNPARCE_HPP_4E73DE55_DA35_4962_86C4_EC0DBDE2E229

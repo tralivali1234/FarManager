@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "mkdir.hpp"
+
+// Internal:
 #include "filepanels.hpp"
 #include "panel.hpp"
 #include "treelist.hpp"
@@ -43,12 +43,24 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "config.hpp"
 #include "dialog.hpp"
 #include "pathmix.hpp"
-#include "strmix.hpp"
-#include "DlgGuid.hpp"
+#include "uuids.far.dialogs.hpp"
 #include "flink.hpp"
 #include "stddlg.hpp"
 #include "lang.hpp"
 #include "cvtname.hpp"
+#include "global.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common.hpp"
+#include "common/enum_tokens.hpp"
+#include "common/string_utils.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 enum
 {
@@ -64,9 +76,11 @@ enum
 	MKDIR_SEPARATOR2,
 	MKDIR_OK,
 	MKDIR_CANCEL,
+
+	MKDIR_COUNT
 };
 
-intptr_t MkDirDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* Param2)
+static intptr_t MkDirDlgProc(Dialog* Dlg,intptr_t Msg,intptr_t Param1,void* Param2)
 {
 	switch (Msg)
 	{
@@ -92,31 +106,35 @@ void ShellMakeDir(Panel *SrcPanel)
 	FarListItem LinkTypeItems[3]={};
 	ComboList.ItemsNumber=std::size(LinkTypeItems);
 	ComboList.Items=LinkTypeItems;
-	ComboList.Items[0].Text=msg(lng::MMakeFolderLinkNone).data();
-	ComboList.Items[1].Text=msg(lng::MMakeFolderLinkJunction).data();
-	ComboList.Items[2].Text=msg(lng::MMakeFolderLinkSymlink).data();
+	ComboList.Items[0].Text=msg(lng::MMakeFolderLinkNone).c_str();
+	ComboList.Items[1].Text=msg(lng::MMakeFolderLinkJunction).c_str();
+	ComboList.Items[2].Text=msg(lng::MMakeFolderLinkSymlink).c_str();
 	ComboList.Items[0].Flags|=LIF_SELECTED;
 
-	FarDialogItem MkDirDlgData[]=
+	auto MkDirDlg = MakeDialogItems<MKDIR_COUNT>(
 	{
-		{DI_DOUBLEBOX,3,1,72,10,0,nullptr,nullptr,0,msg(lng::MMakeFolderTitle).data()},
-		{DI_TEXT,     5,2, 0,2,0,nullptr,nullptr,0,msg(lng::MCreateFolder).data()},
-		{DI_EDIT,     5,3,70,3,0,L"NewFolder",nullptr,DIF_FOCUS|DIF_EDITEXPAND|DIF_HISTORY|DIF_USELASTHISTORY|DIF_EDITPATH,L""},
-		{DI_TEXT,    -1,4, 0,4,0,nullptr,nullptr,DIF_SEPARATOR,L""},
-		{DI_TEXT,     5,5, 0,5,0,nullptr,nullptr,0,msg(lng::MMakeFolderLinkType).data()},
-		{DI_COMBOBOX,20,5,70,5,0,nullptr,nullptr,DIF_DROPDOWNLIST|DIF_LISTNOAMPERSAND|DIF_LISTWRAPMODE,L""},
-		{DI_TEXT,     5,6, 0,6,0,nullptr,nullptr,0,msg(lng::MMakeFolderLinkTarget).data()},
-		{DI_EDIT,    20,6,70,6,0,L"NewFolderLinkTarget",nullptr,DIF_DISABLE|DIF_EDITEXPAND|DIF_HISTORY|DIF_USELASTHISTORY|DIF_EDITPATH,L""},
-		{DI_CHECKBOX, 5,7, 0,7,Global->Opt->MultiMakeDir,nullptr,nullptr,0,msg(lng::MMultiMakeDir).data()},
-		{DI_TEXT,    -1,8, 0,8,0,nullptr,nullptr,DIF_SEPARATOR,L""},
-		{DI_BUTTON,   0,9, 0,9,0,nullptr,nullptr,DIF_DEFAULTBUTTON|DIF_CENTERGROUP,msg(lng::MOk).data()},
-		{DI_BUTTON,   0,9, 0,9,0,nullptr,nullptr,DIF_CENTERGROUP,msg(lng::MCancel).data()},
-	};
-	auto MkDirDlg = MakeDialogItemsEx(MkDirDlgData);
+		{DI_DOUBLEBOX, {{3,  1}, {72, 10}}, DIF_NONE, msg(lng::MMakeFolderTitle), },
+		{DI_TEXT,      {{5,  2}, {0,  2 }}, DIF_NONE, msg(lng::MCreateFolder), },
+		{DI_EDIT,      {{5,  3}, {70, 3 }}, DIF_FOCUS | DIF_EDITEXPAND | DIF_HISTORY | DIF_USELASTHISTORY | DIF_EDITPATH, },
+		{DI_TEXT,      {{-1, 4}, {0,  4 }}, DIF_SEPARATOR, },
+		{DI_TEXT,      {{5,  5}, {0,  5 }}, DIF_NONE, msg(lng::MMakeFolderLinkType), },
+		{DI_COMBOBOX,  {{20, 5}, {70, 5 }}, DIF_DROPDOWNLIST | DIF_LISTNOAMPERSAND | DIF_LISTWRAPMODE, },
+		{DI_TEXT,      {{5,  6}, {0,  6 }}, DIF_NONE, msg(lng::MMakeFolderLinkTarget), },
+		{DI_EDIT,      {{20, 6}, {70, 6 }}, DIF_DISABLE | DIF_EDITEXPAND | DIF_HISTORY | DIF_USELASTHISTORY | DIF_EDITPATH, },
+		{DI_CHECKBOX,  {{5,  7}, {0,  7 }}, DIF_NONE, msg(lng::MMultiMakeDir), },
+		{DI_TEXT,      {{-1, 8}, {0,  8 }}, DIF_SEPARATOR, },
+		{DI_BUTTON,    {{0,  9}, {0,  9 }}, DIF_CENTERGROUP | DIF_DEFAULTBUTTON, msg(lng::MOk), },
+		{DI_BUTTON,    {{0,  9}, {0,  9 }}, DIF_CENTERGROUP, msg(lng::MCancel), },
+	});
+
+	MkDirDlg[MKDIR_EDIT].strHistory = L"NewFolder"sv;
+	MkDirDlg[MKDIR_EDIT_LINKPATH].strHistory = L"NewFolderLinkTarget"sv;
 	MkDirDlg[MKDIR_COMBOBOX_LINKTYPE].ListItems=&ComboList;
+	MkDirDlg[MKDIR_CHECKBOX].Selected = Global->Opt->MultiMakeDir;
+
 	const auto Dlg = Dialog::create(MkDirDlg, MkDirDlgProc);
-	Dlg->SetPosition(-1,-1,76,12);
-	Dlg->SetHelp(L"MakeFolder");
+	Dlg->SetPosition({ -1, -1, 76, 12 });
+	Dlg->SetHelp(L"MakeFolder"sv);
 	Dlg->SetId(MakeFolderId);
 	Dlg->Process();
 
@@ -128,9 +146,9 @@ void ShellMakeDir(Panel *SrcPanel)
 		// это по поводу создания одиночного каталога, который
 		// начинается с пробела! Чтобы ручками не заключать
 		// такой каталог в кавычки
-		if (Global->Opt->MultiMakeDir && strDirName.find_first_of(L";,\"") == string::npos)
+		if (Global->Opt->MultiMakeDir && strDirName.find_first_of(L";,\""sv) == string::npos)
 		{
-			QuoteSpaceOnly(strDirName);
+			inplace::quote_space(strDirName);
 		}
 
 		// нужно создать только ОДИН каталог
@@ -144,7 +162,7 @@ void ShellMakeDir(Panel *SrcPanel)
 		string strOriginalDirName;
 		bool SkipAll = false;
 		auto EmptyList = true;
-		for (const auto& i: enum_tokens_with_quotes_t<with_trim>(std::move(strDirName), L",;"_sv))
+		for (const auto& i: enum_tokens_with_quotes_t<with_trim>(std::move(strDirName), L",;"sv))
 		{
 			if (i.empty())
 				continue;
@@ -152,7 +170,7 @@ void ShellMakeDir(Panel *SrcPanel)
 			EmptyList = false;
 			// TODO: almost the same code in dirmix::CreatePath()
 
-			assign(strOriginalDirName, i);
+			strOriginalDirName = i;
 			strDirName = ConvertNameToFull(i);
 			DeleteEndSlash(strDirName);
 			bool bSuccess = false;

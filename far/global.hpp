@@ -36,6 +36,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+#include "platform.hpp"
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
 enum class lng;
 
 class global: noncopyable
@@ -46,15 +57,12 @@ public:
 
 	HANDLE MainThreadHandle() const {return m_MainThreadHandle.native_handle();}
 	bool IsMainThread() const {return GetCurrentThreadId() == m_MainThreadId;}
-	static string_view Version();
-	static string_view Copyright();
+	std::chrono::steady_clock::duration FarUpTime() const;
 
 	const string& GetSearchString() const { return m_SearchString; }
 	bool GetSearchHex() const { return m_SearchHex; }
-	void StoreSearchString(const string& Str, bool Hex);
+	void StoreSearchString(string_view Str, bool Hex);
 	bool IsPanelsActive() const;
-
-	const wchar_t* GetLangMsg(lng Id) const;
 
 	// BUGBUG
 
@@ -63,17 +71,16 @@ public:
 	string g_strFarINI;
 	string g_strFarPath;
 	string strInitTitle;
-	bool GlobalSearchCase;
-	bool GlobalSearchWholeWords; // значение "Whole words" для поиска
-	bool GlobalSearchReverse;
-	bool ScreenSaverActive;
+	bool GlobalSearchCase{};
+	bool GlobalSearchWholeWords{}; // значение "Whole words" для поиска
+	bool GlobalSearchReverse{};
 	std::atomic_ulong SuppressClock{};
 	std::atomic_ulong SuppressIndicators{};
-	bool CloseFAR, CloseFARMenu, AllowCancelExit;
-	bool DisablePluginsOutput;
-	int IsProcessAssignMacroKey;
-	size_t PluginPanelsCount;
-	bool ProcessException;
+	bool CloseFAR{}, CloseFARMenu{}, AllowCancelExit{true};
+	bool DisablePluginsOutput{};
+	int IsProcessAssignMacroKey{};
+	size_t PluginPanelsCount{};
+	bool ProcessException{};
 
 	class far_clock
 	{
@@ -92,18 +99,17 @@ public:
 	far_clock CurrentTime;
 
 	size_t LastShownTimeSize{};
-	const wchar_t *HelpFileMask;
-	bool OnlyEditorViewerUsed; // -e or -v
+	string_view HelpFileMask{L"*.hlf"sv};
+	bool OnlyEditorViewerUsed{}; // -e or -v
 #if defined(SYSLOG)
-	bool StartSysLog;
+	bool StartSysLog{};
 #endif
 #ifdef DIRECT_RT
-	bool DirectRT;
+	bool DirectRT{};
 #endif
-	class SaveScreen *GlobalSaveScrPtr;
-	bool CriticalInternalError;
-	int KeepUserScreen;
-	int Macro_DskShowPosType; // для какой панели вызывали меню выбора дисков (0 - ничерта не вызывали, 1 - левая (AltF1), 2 - правая (AltF2))
+	class SaveScreen *GlobalSaveScrPtr{};
+	bool CriticalInternalError{};
+	int Macro_DskShowPosType{}; // для какой панели вызывали меню выбора дисков (0 - ничерта не вызывали, 1 - левая (AltF1), 2 - правая (AltF2))
 	DWORD ErrorMode;
 #ifndef NO_WRAPPER
 	string strRegUser;
@@ -114,17 +120,18 @@ public:
 private:
 	DWORD m_MainThreadId;
 	os::handle m_MainThreadHandle;
+	std::chrono::steady_clock::time_point m_FarStartTime;
 
 	string m_SearchString;
-	bool m_SearchHex;
+	bool m_SearchHex{};
 
 public:
 	// TODO: review the order and make private
-	class config_provider* m_ConfigProvider;
+	class config_provider* m_ConfigProvider{};
 	std::unique_ptr<class Options> Opt;
 	std::unique_ptr<class ScreenBuf> ScrBuf;
 	std::unique_ptr<class Manager> WindowManager;
-	class ControlObject* CtrlObject;
+	class ControlObject* CtrlObject{};
 };
 
 extern global* Global;

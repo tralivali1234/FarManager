@@ -32,32 +32,38 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+//----------------------------------------------------------------------------
+
 namespace detail
 {
-	template<typename T>
-	using root_type_t = std::remove_cv_t<std::remove_reference_t<std::remove_pointer_t<T>>>;
-
-	template<typename> struct function_traits;
-
-	template<typename result, typename... args>
+	template<typename result, typename, typename... args>
 	struct function_traits_impl
 	{
-		using return_type_t = root_type_t<result>;
+		using result_type = result;
+
+		static constexpr auto arity = sizeof...(args);
+
+		template<size_t i>
+		using arg = std::tuple_element_t<i, std::tuple<args...>>;
 	};
-
-	template<typename result, typename... args>
-	struct function_traits<result(*)(args...)>: function_traits_impl<result, args...> {};
-
-	template<typename result, typename object, typename... args>
-	struct function_traits<result(object::*)(args...)>: function_traits_impl<result, args...> {};
-
-	template<typename result, typename object, typename... args>
-	struct function_traits<result(object::*)(args...) const>: function_traits_impl<result, args...> {};
 }
 
-template<typename function>
-using return_type_t = typename detail::function_traits<function>::return_type_t;
+template<typename object>
+struct function_traits: function_traits<decltype(&object::operator())> {};
 
-#define FN_RETURN_TYPE(function_name) return_type_t<decltype(&function_name)>
+template<typename result, typename... args>
+struct function_traits<result(args...)>: ::detail::function_traits_impl<result, void, args...> {};
+
+template<typename result, typename... args>
+struct function_traits<result(*)(args...)>: ::detail::function_traits_impl<result, void, args...> {};
+
+template<typename result, typename object, typename... args>
+struct function_traits<result(object::*)(args...)>: ::detail::function_traits_impl<result, object, args...> {};
+
+template<typename result, typename object, typename... args>
+struct function_traits<result(object::*)(args...) const>: ::detail::function_traits_impl<result, object, args...> {};
+
+
+#define FN_RETURN_TYPE(...) std::decay_t<function_traits<decltype(&__VA_ARGS__)>::result_type>
 
 #endif // FUNCTION_TRAITS_HPP_071DD1DD_F933_40DC_A662_CB85F7BE7F00

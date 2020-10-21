@@ -31,128 +31,233 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
+// Self:
+#include "platform.hpp"
 
+// Internal:
 #include "imports.hpp"
 #include "pathmix.hpp"
 #include "string_utils.hpp"
+#include "exception.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+#include "platform.memory.hpp"
+
+// Common:
+#include "common/algorithm.hpp"
+#include "common/range.hpp"
+#include "common/string_utils.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 namespace os
 {
 	namespace detail
 	{
-		void handle_closer::operator()(HANDLE Handle) const { CloseHandle(Handle); }
-		void printer_handle_closer::operator()(HANDLE Handle) const { ClosePrinter(Handle); }
+		HANDLE handle_implementation::normalise(HANDLE const Handle)
+		{
+			return Handle == INVALID_HANDLE_VALUE? nullptr : Handle;
+		}
+
+		bool handle_implementation::wait(HANDLE const Handle, std::optional<std::chrono::milliseconds> const Timeout)
+		{
+			switch (const auto Result = WaitForSingleObject(Handle, Timeout? *Timeout / 1ms : INFINITE))
+			{
+			case WAIT_OBJECT_0:
+				return true;
+
+			case WAIT_TIMEOUT:
+				return false;
+
+			default:
+				// Abandoned or error
+				throw MAKE_FAR_FATAL_EXCEPTION(format(FSTR(L"WaitForSingleobject returned {0}"), Result));
+			}
+		}
+
+		std::optional<size_t> handle_implementation::wait(span<HANDLE const> const Handles, bool const WaitAll, std::optional<std::chrono::milliseconds> Timeout)
+		{
+			assert(!Handles.empty());
+			assert(Handles.size() <= MAXIMUM_WAIT_OBJECTS);
+
+			const auto Result = WaitForMultipleObjects(static_cast<DWORD>(Handles.size()), Handles.data(), WaitAll, Timeout? *Timeout / 1ms : INFINITE);
+
+			if (in_range<size_t>(WAIT_OBJECT_0, Result, WAIT_OBJECT_0 + Handles.size() - 1))
+			{
+				return Result - WAIT_OBJECT_0;
+			}
+			else if (Result == WAIT_TIMEOUT)
+			{
+				return {};
+			}
+			else
+			{
+				// Abandoned or error
+				throw MAKE_FAR_FATAL_EXCEPTION(format(FSTR(L"WaitForMultipleObjects returned {0}"), Result));
+			}
+		}
+
+		void handle_closer::operator()(HANDLE Handle) const noexcept
+		{
+			CloseHandle(Handle);
+		}
+
+		void printer_handle_closer::operator()(HANDLE Handle) const noexcept
+		{
+			ClosePrinter(Handle);
+		}
 	}
 
 
+	void set_error_mode(unsigned Mask)
+	{
+		// TODO: Use GetErrorMode
+		SetErrorMode(SetErrorMode(Mask) | Mask);
+	}
+
+	void unset_error_mode(unsigned Mask)
+	{
+		// TODO: Use GetErrorMode
+		SetErrorMode(SetErrorMode(0) & ~Mask);
+	}
+
 NTSTATUS GetLastNtStatus()
 {
-	return imports::instance().RtlGetLastNtStatus? imports::instance().RtlGetLastNtStatus() : STATUS_SUCCESS;
+	return imports.RtlGetLastNtStatus? imports.RtlGetLastNtStatus() : STATUS_SUCCESS;
 }
 
 string GetErrorString(bool Nt, DWORD Code)
 {
-	os::memory::local::ptr<wchar_t> Buffer;
-	size_t size = FormatMessage((Nt? FORMAT_MESSAGE_FROM_HMODULE : FORMAT_MESSAGE_FROM_SYSTEM) | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS, (Nt? GetModuleHandle(L"ntdll.dll") : nullptr), Code, 0, reinterpret_cast<wchar_t*>(&ptr_setter(Buffer)), 0, nullptr);
-	string Result(Buffer.get(), size);
+	memory::local::ptr<wchar_t> Buffer;
+	const size_t Size = FormatMessage((Nt? FORMAT_MESSAGE_FROM_HMODULE : FORMAT_MESSAGE_FROM_SYSTEM) | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS, (Nt? GetModuleHandle(L"ntdll.dll") : nullptr), Code, 0, reinterpret_cast<wchar_t*>(&ptr_setter(Buffer)), 0, nullptr);
+	string Result(Buffer.get(), Size);
 	std::replace_if(ALL_RANGE(Result), IsEol, L' ');
-	const auto End = Result.find_last_not_of(' ');
-	if (End != Result.npos)
-		Result.resize(End);
+	inplace::trim_right(Result);
 	return Result;
 }
 
-bool WNetGetConnection(const string_view& LocalName, string &RemoteName)
+string format_system_error(unsigned int const ErrorCode, string_view const ErrorMessage)
 {
-	wchar_t_ptr_n<MAX_PATH> Buffer(MAX_PATH);
+	return format(FSTR(L"0x{0:0>8X} - {1}"), ErrorCode, ErrorMessage);
+}
+
+
+last_error_guard::last_error_guard():
+	m_LastError(GetLastError()),
+	m_LastStatus(imports.RtlGetLastNtStatus()),
+	m_Active(true)
+{
+}
+
+last_error_guard::~last_error_guard()
+{
+	if (!m_Active)
+		return;
+
+	SetLastError(m_LastError);
+	imports.RtlNtStatusToDosError(m_LastStatus);
+}
+
+void last_error_guard::dismiss()
+{
+	m_Active = false;
+}
+
+
+bool WNetGetConnection(const string_view LocalName, string &RemoteName)
+{
+	auto Buffer = os::buffer<wchar_t>();
 	// MSDN says that call can fail with ERROR_NOT_CONNECTED or ERROR_CONNECTION_UNAVAIL if calling application
 	// is running in a different logon session than the application that made the connection.
 	// However, it may fail with ERROR_NOT_CONNECTED for non-network too, in this case Buffer will not be initialised.
-	// Deliberately initialised with empty string to fix that.
-	Buffer[0] = L'\0';
+	// Deliberately initialised with an empty string to fix that.
+	Buffer.front() = {};
 	auto Size = static_cast<DWORD>(Buffer.size());
-	null_terminated C_LocalName(LocalName);
-	auto Result = ::WNetGetConnection(C_LocalName.data(), Buffer.get(), &Size);
+	const null_terminated C_LocalName(LocalName);
+	auto Result = ::WNetGetConnection(C_LocalName.c_str(), Buffer.data(), &Size);
 
 	while (Result == ERROR_MORE_DATA)
 	{
 		Buffer.reset(Size);
-		Result = ::WNetGetConnection(C_LocalName.data(), Buffer.get(), &Size);
+		Result = ::WNetGetConnection(C_LocalName.c_str(), Buffer.data(), &Size);
 	}
 
-	const auto& IsReceived = [](int Code) { return Code == NO_ERROR || Code == ERROR_NOT_CONNECTED || Code == ERROR_CONNECTION_UNAVAIL; };
+	const auto IsReceived = [](int Code) { return Code == NO_ERROR || Code == ERROR_NOT_CONNECTED || Code == ERROR_CONNECTION_UNAVAIL; };
 
 	if (IsReceived(Result) && *Buffer)
 	{
 		// Size isn't updated if the buffer is large enough
-		RemoteName = Buffer.get();
+		RemoteName = Buffer.data();
 		return true;
 	}
 
 	return false;
 }
 
-void EnableLowFragmentationHeap()
+bool get_locale_value(LCID const LcId, LCTYPE const Id, string& Value)
 {
-	// Starting with Windows Vista, the system uses the low-fragmentation heap (LFH) as needed to service memory allocation requests.
-	// Applications do not need to enable the LFH for their heaps.
-	if (IsWindowsVistaOrGreater())
-		return;
-
-	if (!imports::instance().HeapSetInformation)
-		return;
-
-	std::vector<HANDLE> Heaps(10);
-	for (;;)
+	return detail::ApiDynamicErrorBasedStringReceiver(ERROR_INSUFFICIENT_BUFFER, Value, [&](span<wchar_t> Buffer)
 	{
-		const auto NumberOfHeaps = ::GetProcessHeaps(static_cast<DWORD>(Heaps.size()), Heaps.data());
-		const auto Received = NumberOfHeaps <= Heaps.size();
-		Heaps.resize(NumberOfHeaps);
-		if (Received)
-			break;
-	}
-
-	for (const auto i: Heaps)
-	{
-		ULONG HeapFragValue = 2;
-		imports::instance().HeapSetInformation(i, HeapCompatibilityInformation, &HeapFragValue, sizeof(HeapFragValue));
-	}
-}
-
-string GetLocaleValue(LCID lcid, LCTYPE id)
-{
-	string Result;
-	return detail::ApiDynamicErrorBasedStringReceiver(ERROR_INSUFFICIENT_BUFFER, Result, [&](wchar_t* Buffer, size_t Size)
-	{
-		const auto ReturnedSize = ::GetLocaleInfo(lcid, id, Buffer, static_cast<int>(Size));
+		const auto ReturnedSize = GetLocaleInfo(LcId, Id, Buffer.data(), static_cast<int>(Buffer.size()));
 		return ReturnedSize? ReturnedSize - 1 : 0;
-	})?
-	Result : L""s;
+	});
 }
 
-string GetPrivateProfileString(const string& AppName, const string& KeyName, const string& Default, const string& FileName)
+bool get_locale_value(LCID const LcId, LCTYPE const Id, int& Value)
 {
-	wchar_t_ptr Buffer(NT_MAX_PATH);
-	DWORD size = ::GetPrivateProfileString(AppName.data(), KeyName.data(), Default.data(), Buffer.get(), static_cast<DWORD>(Buffer.size()), FileName.data());
-	return string(Buffer.get(), size);
+	return GetLocaleInfo(LcId, Id | LOCALE_RETURN_NUMBER, reinterpret_cast<wchar_t*>(&Value), sizeof(Value) / sizeof(wchar_t)) != 0;
+}
+
+string GetPrivateProfileString(string_view const AppName, string_view const KeyName, string_view const Default, string_view const FileName)
+{
+	string Value;
+
+	(void)detail::ApiDynamicStringReceiver(Value, [&](span<wchar_t> const Buffer)
+	{
+		const auto Size = ::GetPrivateProfileString(null_terminated(AppName).c_str(), null_terminated(KeyName).c_str(), null_terminated(Default).c_str(), Buffer.data(), static_cast<DWORD>(Buffer.size()), null_terminated(FileName).c_str());
+		return Size == Buffer.size() - 1? Buffer.size() * 2 : Size;
+	});
+
+	return Value;
 }
 
 bool GetWindowText(HWND Hwnd, string& Text)
 {
-	return detail::ApiDynamicStringReceiver(Text, [&](wchar_t* Buffer, size_t Size)
+	// GetWindowText[Length] might return 0 not only in case of failure, but also when the window title is empty.
+	// To recognise this, we set LastError to ERROR_SUCCESS manually and check it after the call,
+	// which doesn't change it upon success.
+	last_error_guard ErrorGuard;
+	SetLastError(ERROR_SUCCESS);
+
+	if (detail::ApiDynamicStringReceiver(Text, [&](span<wchar_t> Buffer)
 	{
 		const size_t Length = ::GetWindowTextLength(Hwnd);
 
 		if (!Length)
 			return Length;
 
-		if (Length + 1 > Size)
+		if (Length + 1 > Buffer.size())
 			return Length + 1;
 
-		return static_cast<size_t>(::GetWindowText(Hwnd, Buffer, static_cast<int>(Size)));
-	});
+		return static_cast<size_t>(::GetWindowText(Hwnd, Buffer.data(), static_cast<int>(Buffer.size())));
+	}))
+	{
+		return true;
+	}
+
+	if (GetLastError() == ERROR_SUCCESS)
+	{
+		Text.clear();
+		return true;
+	}
+
+	// Something went wrong, it's better to leave the last error as is
+	ErrorGuard.dismiss();
+	return false;
 }
 
 bool IsWow64Process()
@@ -160,7 +265,7 @@ bool IsWow64Process()
 #ifdef _WIN64
 	return false;
 #else
-	static const auto Wow64Process = []{ BOOL Value = FALSE; return imports::instance().IsWow64Process(GetCurrentProcess(), &Value) && Value; }();
+	static const auto Wow64Process = []{ BOOL Value = FALSE; return imports.IsWow64Process(GetCurrentProcess(), &Value) && Value; }();
 	return Wow64Process;
 #endif
 }
@@ -188,10 +293,13 @@ DWORD GetAppPathsRedirectionFlag()
 
 bool GetDefaultPrinter(string& Printer)
 {
-	return detail::ApiDynamicErrorBasedStringReceiver(ERROR_INSUFFICIENT_BUFFER, Printer, [&](wchar_t* Buffer, size_t Size)
+	return detail::ApiDynamicStringReceiver(Printer, [&](span<wchar_t> Buffer)
 	{
-		DWORD dwSize = static_cast<DWORD>(Size);
-		return ::GetDefaultPrinter(Buffer, &dwSize)? dwSize - 1 : 0;
+		auto Size = static_cast<DWORD>(Buffer.size());
+		if (::GetDefaultPrinter(Buffer.data(), &Size))
+			return Size - 1;
+
+		return GetLastError() == ERROR_INSUFFICIENT_BUFFER? Size : 0;
 	});
 }
 
@@ -208,12 +316,12 @@ bool GetComputerName(string& Name)
 
 bool GetComputerNameEx(COMPUTER_NAME_FORMAT NameFormat, string& Name)
 {
-	return detail::ApiDynamicStringReceiver(Name, [&](wchar_t* Buffer, size_t Size)
+	return detail::ApiDynamicStringReceiver(Name, [&](span<wchar_t> Buffer)
 	{
-		auto dwSize = static_cast<DWORD>(Size);
-		if (!::GetComputerNameEx(NameFormat, Buffer, &dwSize) && GetLastError() != ERROR_MORE_DATA)
+		auto Size = static_cast<DWORD>(Buffer.size());
+		if (!::GetComputerNameEx(NameFormat, Buffer.data(), &Size) && GetLastError() != ERROR_MORE_DATA)
 			return 0ul;
-		return dwSize;
+		return Size;
 	});
 }
 
@@ -230,12 +338,12 @@ bool GetUserName(string& Name)
 
 bool GetUserNameEx(EXTENDED_NAME_FORMAT NameFormat, string& Name)
 {
-	return detail::ApiDynamicStringReceiver(Name, [&](wchar_t* Buffer, size_t Size)
+	return detail::ApiDynamicStringReceiver(Name, [&](span<wchar_t> Buffer)
 	{
-		auto dwSize = static_cast<DWORD>(Size);
-		if (!::GetUserNameEx(NameFormat, Buffer, &dwSize) && GetLastError() != ERROR_MORE_DATA)
+		auto Size = static_cast<DWORD>(Buffer.size());
+		if (!::GetUserNameEx(NameFormat, Buffer.data(), &Size) && GetLastError() != ERROR_MORE_DATA)
 			return 0ul;
-		return dwSize;
+		return Size;
 	});
 }
 
@@ -255,6 +363,25 @@ handle OpenConsoleActiveScreenBuffer()
 	return handle(fs::low::create_file(L"CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
 }
 
+	namespace com
+	{
+		initialize::initialize():
+			m_Initialised(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
+		{
+		}
+
+		initialize::~initialize()
+		{
+			if (m_Initialised)
+				CoUninitialize();
+		}
+
+		void detail::memory_releaser::operator()(const void* Object) const
+		{
+			CoTaskMemFree(const_cast<void*>(Object));
+		}
+	}
+
 	namespace rtdl
 	{
 		void module::module_deleter::operator()(HMODULE Module) const
@@ -262,45 +389,109 @@ handle OpenConsoleActiveScreenBuffer()
 			FreeLibrary(Module);
 		}
 
-		HMODULE module::get_module() const
+		HMODULE module::get_module() const noexcept
 		{
 			if (!m_tried && !m_module && !m_name.empty())
 			{
 				m_tried = true;
-				m_module.reset(LoadLibrary(m_name.data()));
+				m_module.reset(LoadLibrary(m_name.c_str()));
 
 				if (!m_module && m_AlternativeLoad && IsAbsolutePath(m_name))
 				{
-					m_module.reset(LoadLibraryEx(m_name.data(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH));
+					m_module.reset(LoadLibraryEx(m_name.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH));
 				}
 				// TODO: log if nullptr
 			}
 			return m_module.get();
 		}
 	}
-}
 
-UUID CreateUuid()
-{
-	UUID Uuid;
-	UuidCreate(&Uuid);
-	return Uuid;
-}
-
-string GuidToStr(const GUID& Guid)
-{
-	string result;
-	RPC_WSTR str;
-	// declared as non-const in GCC headers :(
-	if (UuidToString(const_cast<GUID*>(&Guid), &str) == RPC_S_OK)
+	namespace uuid
 	{
-		SCOPE_EXIT{ RpcStringFree(&str); };
-		result = reinterpret_cast<const wchar_t*>(str);
+		UUID generate()
+		{
+			UUID Uuid;
+			UuidCreate(&Uuid);
+			return Uuid;
+		}
 	}
-	return upper(result);
+
+	namespace debug
+	{
+		bool debugger_present()
+		{
+			return IsDebuggerPresent() != FALSE;
+		}
+
+		void breakpoint(bool const Always)
+		{
+			if (Always || debugger_present())
+				DebugBreak();
+		}
+
+		void print(const wchar_t* const Str)
+		{
+			OutputDebugString(Str);
+		}
+
+		void print(string const& Str)
+		{
+			print(Str.c_str());
+		}
+	}
 }
 
-bool StrToGuid(const wchar_t* Value, GUID& Guid)
+#ifdef ENABLE_TESTS
+
+#include "testing.hpp"
+
+TEST_CASE("platform.string.receiver")
 {
-	return UuidFromString(reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(Value)), &Guid) == RPC_S_OK;
+	const auto api_function = [](size_t const EmulatedSize, wchar_t* const Buffer, size_t const BufferSize)
+	{
+		string Data;
+		Data.resize(EmulatedSize);
+		std::iota(ALL_RANGE(Data), L'\1');
+
+		if (BufferSize < Data.size() + 1)
+			return Data.size() + 1;
+
+		*copy_string(Data, Buffer) = {};
+
+		return Data.size();
+	};
+
+	const auto validate = [](string const& Data)
+	{
+		for (size_t i = 0, size = Data.size(); i != size; ++i)
+		{
+			if (Data[i] != i + 1)
+				return false;
+		}
+
+		return true;
+	};
+
+	static size_t const Tests[]
+	{
+		0,
+		1,
+		42,
+		os::default_buffer_size - 1,
+		os::default_buffer_size,
+		os::default_buffer_size + 1,
+		420,
+	};
+
+	for (const auto& i: Tests)
+	{
+		string Data;
+		REQUIRE((i != 0) == os::detail::ApiDynamicStringReceiver(Data, [&](span<wchar_t> const Buffer)
+		{
+			return api_function(i, Buffer.data(), Buffer.size());
+		}));
+
+		REQUIRE(validate(Data));
+	}
 }
+#endif

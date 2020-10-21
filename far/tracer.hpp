@@ -32,46 +32,45 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "platform.concurrency.hpp"
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/function_ref.hpp"
+#include "common/noncopyable.hpp"
+#include "common/range.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 class tracer: noncopyable
 {
 public:
-	tracer();
-	~tracer();
+	static std::vector<DWORD64> get(string_view Module, const EXCEPTION_POINTERS& Pointers, HANDLE ThreadHandle);
+	static void get_symbols(string_view Module, span<DWORD64 const> Trace, function_ref<void(string&& Line)> Consumer);
+	static void get_symbol(string_view Module, const void* Ptr, string& Address, string& Name, string& Source);
 
-	void store(const void* CppObject, const EXCEPTION_POINTERS* ExceptionInfo);
-
-	static std::vector<string> get(const void* CppObject);
-	static std::vector<string> get(const exception_context& Context);
-	static void get_one(const void* Ptr, string& Address, string& Name, string& Source);
-
-	static const exception_context* get_exception_context(const void* CppObject);
-
-private:
-	friend class with_symbols;
-
-	const exception_context* get_context(const void* CppObject) const;
-
-	bool SymInitialise();
-	void SymCleanup();
-
-	static tracer* sTracer;
-	mutable os::critical_section m_CS;
-	std::unordered_map<const void*, std::unique_ptr<exception_context>> m_CppMap;
-	std::string m_SymbolSearchPath;
-
-	class veh_handler: noncopyable
+	class with_symbols
 	{
 	public:
-		explicit veh_handler(PVECTORED_EXCEPTION_HANDLER Handler);
-		~veh_handler();
+		NONCOPYABLE(with_symbols);
 
-	private:
-		void* m_Handler;
-	}
-	m_Handler;
-	bool m_SymInitialised{};
+		with_symbols(string_view const Module)
+		{
+			sym_initialise(Module);
+		}
+
+		~with_symbols()
+		{
+			sym_cleanup();
+		}
+	};
+
+private:
+	static void sym_initialise(string_view Module);
+	static void sym_cleanup();
 };
 
 #endif // TRACER_HPP_AD7B9307_ECFD_46FC_B001_E48C9B89DE64

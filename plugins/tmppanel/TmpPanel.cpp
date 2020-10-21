@@ -1,9 +1,11 @@
-/*
+п»ї/*
 TMPPANEL.CPP
 
 Temporary panel main plugin code
 
 */
+
+#include <memory>
 
 #include "plugin.hpp"
 #include <shellapi.h>
@@ -167,7 +169,7 @@ void ReadFileLines(HANDLE hFileMapping, DWORD FileSizeLow, wchar_t **argv, wchar
 
 			if (!(test & IS_TEXT_UNICODE_NOT_UNICODE_MASK) || (test & IS_TEXT_UNICODE_ODD_LENGTH)) // ignore odd
 			{
-				if (test & IS_TEXT_UNICODE_STATISTICS) // !!! допускаем возможность, что это Unicode
+				if (test & IS_TEXT_UNICODE_STATISTICS) // !!! РґРѕРїСѓСЃРєР°РµРј РІРѕР·РјРѕР¶РЅРѕСЃС‚СЊ, С‡С‚Рѕ СЌС‚Рѕ Unicode
 				{
 					cp=CP_UNICODE;
 				}
@@ -411,7 +413,12 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 
 	if (Info->OpenFrom==OPEN_COMMANDLINE)
 	{
-		wchar_t *argv=(wchar_t *)(((OpenCommandLineInfo*)Info->Data)->CommandLine); //BUGBUG
+		const auto CommandLine = reinterpret_cast<const OpenCommandLineInfo*>(Info->Data)->CommandLine;
+		const auto CommandLineSize = wcslen(CommandLine);
+		const auto Buffer = std::make_unique<wchar_t[]>(CommandLineSize + 1);
+		auto argv = Buffer.get();
+		wcscpy(argv, CommandLine);
+
 		#define OPT_COUNT 5
 		static const wchar_t ParamsStr[OPT_COUNT][8]=
 		{
@@ -423,14 +430,14 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 			&Opt.MenuForFilelist,&Opt.FullScreenPanel
 		};
 
-		while (argv && *argv==L' ')
+		while (*argv==L' ')
 			argv++;
 
 		while (lstrlen(argv)>1 && (*argv==L'+' || *argv==L'-'))
 		{
 			int k=0;
 
-			while (argv && *argv!=L' ' && *argv!=L'<')
+			while (*argv && *argv!=L' ' && *argv!=L'<')
 			{
 				k++;
 				argv++;
@@ -447,13 +454,13 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 			if (*(TMP+1)>=L'0' && *(TMP+1)<=L'9')
 				CurrentCommonPanel=*(TMP+1)-L'0';
 
-			while (argv && *argv==L' ')
+			while (*argv==L' ')
 				argv++;
 		}
 
 		FSF.Trim(argv);
 
-		if (lstrlen(argv))
+		if (*argv)
 		{
 			if (*argv==L'<')
 			{
@@ -479,7 +486,7 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 					}
 					else
 					{
-						hPlugin=new TmpPanel();
+						hPlugin=new TmpPanel(TmpOut);
 
 						if (hPlugin==NULL)
 							return nullptr;
@@ -507,7 +514,7 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 
 			if (!Opt.MenuForFilelist)
 			{
-				HANDLE hPlugin=new TmpPanel();
+				HANDLE hPlugin=new TmpPanel(pName);
 
 				if (hPlugin == NULL)
 					return nullptr;
@@ -518,7 +525,7 @@ HANDLE WINAPI OpenW(const struct OpenInfo *Info)
 			else
 			{
 				ShowMenuFromList(pName);
-				return nullptr;
+				return PANEL_STOP;
 			}
 		}
 		return nullptr;

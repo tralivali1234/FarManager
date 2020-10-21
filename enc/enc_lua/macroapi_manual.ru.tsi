@@ -48,7 +48,7 @@ lv=1
 dt=Text
 nm=Загрузка макрофайлов
 ctime=3618591871
-mtime=3618593361
+mtime=3735335890
 <article>
 #_<markdown>
 #_
@@ -64,10 +64,12 @@ mtime=3618593361
 #_
 #_* Один макрофайл может содержать произвольное количество макросов и обработчиков событий.
 #_
-#_* При исполнении макрофайла ему передаётся один параметр - полный путь к данному макрофайлу.
-#_   Если в начале макрофайла определить переменную, например,<br>
-#_   `local MacroFileName = ...`<br>
-#_   то эта переменная будет доступна всем макросам и обработчикам событий в данном файле.
+#_* При исполнении макрофайла ему передаётся 2 параметра:
+#_  (1) полный путь к данному макрофайлу и
+#_  (2) счётчик количества исполнений.
+#_  Если в начале макрофайла определить 2 переменные, например:<br>
+#_  `local MacroFileName, ExeCounter = ...`<br>
+#_   то эти переменные будут доступны всем макросам и обработчикам событий в данном файле.
 #_
 #_* Если макрофайлы грузятся из последовательности деревьев `root1;root2;...`,
 #_  то это значит, что:
@@ -101,7 +103,7 @@ lv=2
 dt=Text
 nm=Стационарные макросы
 ctime=3580139016
-mtime=3678014959
+mtime=3785248540
 <article>
 #_<markdown>
 #_
@@ -109,16 +111,17 @@ mtime=3678014959
 #_
 #_```
 #_  Macro {
-#_    area         = "Shell Info Tree";                         -- string
-#_    key          = "CtrlF11 ShiftHome";                       -- string (опциональное поле)
-#_    description  = "Macro example";                           -- string (опциональное поле)
-#_    flags        = "NoPluginPanels EmptyCommandLine";         -- string (опциональное поле)
-#_    filemask     = "*.txt,*.cpp";                             -- string (опциональное поле)
-#_    priority     = 50;                                        -- number (опциональное поле)
-#_    sortpriority = 50;                                        -- number (опциональное поле)
-#_    condition    = function(key) return Far.Height>30 end;    -- function (опциональное поле)
-#_    action       = function() msgbox("","Macro example") end; -- function
-#_    id           = "F0109446-AA63-4873-AEC3-17AEE993AA53";    -- string (опциональное поле)
+#_    area         = "Shell Info Tree";                             -- string
+#_    key          = "CtrlF11 ShiftHome";                           -- string (опциональное поле)
+#_    description  = "Macro example";                               -- string (опциональное поле)
+#_    flags        = "NoPluginPanels EmptyCommandLine";             -- string (опциональное поле)
+#_    filemask     = "*.txt,*.cpp";                                 -- string (опциональное поле)
+#_    priority     = 50;                                            -- number (опциональное поле)
+#_    sortpriority = 50;                                            -- number (опциональное поле)
+#_    selected     = true;                                          -- boolean (опциональное поле)
+#_    condition    = function(key,data) return Far.Height>30 end;   -- function (опциональное поле)
+#_    action       = function(data) msgbox("","Macro example") end; -- function
+#_    id           = "F0109446-AA63-4873-AEC3-17AEE993AA53";        -- string (опциональное поле)
 #_  }
 #_```
 #_
@@ -144,6 +147,9 @@ mtime=3678014959
 #_1. Опциональное поле `sortpriority` (приоритет для сортировки) - число от 0 до 100. Значение по умолчанию = 50.<br>
 #_   Значение данного поля учитывается при определении порядка расположения макросов в меню выбора макроса.
 #_
+#_1. Опциональное поле `selected` - булевая величина.<br>
+#_   Это поле указывает, что данный макрос должен быть изначально выбран в меню выбора макроса.
+#_
 #_1. Опциональное поле `filemask` - строка.<br>
 #_   Применимо только для областей `Editor` и `Viewer`. Обрабатывается по правилам,
 #_   аналогичным тем, которые Фар применяет для масок файлов при поиске из панелей и т.д.
@@ -151,15 +157,19 @@ mtime=3678014959
 #_   макрос выполняться не будет.
 #_
 #_1. Опциональное поле `condition` - функция.
-#_   * Вызывается с одним аргументом: имя нажатого ключа.
-#_     Для автостартующих макросов - вызывается без аргументов.
+#_   * Вызывается с 2-мя аргументами:
+#_     1. Имя нажатого ключа (`nil` для автостартующих макросов)
+#_     2. Копия таблицы-аргумента функции Macro.
+#_        Одна и та же таблица-копия используется вплоть до перезагрузки макросов.
 #_   * Если возвращает `false`/`nil`/ничего, то макрос не исполняется.
 #_   * Если возвращает число, то это число используется вместо `priority`.
 #_   * При других значениях возврата (например, `true`) используется `priority`.<br><br>
 #_
 #_1. Поле `action` - функция.<br>
-#_   Если макрос успешно прошёл все предварительные проверки (область действия, флаги,
-#_   маска файла, приоритет), то вызывается функция `action`.
+#_   * Если макрос успешно прошёл все предварительные проверки (область действия, флаги,
+#_     маска файла, приоритет), то вызывается функция `action`.
+#_   * Вызывается с одним аргументом: копией таблицы-аргумента функции Macro.
+#_     Это та же самая таблица, которая передаётся вторым аргуметом в функцию `condition`.<br><br>
 #_
 #_1. Допустимо более одного макроса на сочетание (`key`,`area`). В этом случае выполняется макрос с наибольшим приоритетом. Если есть более одного макроса с одинаковым наибольшим приоритетом - выводится меню выбора макроса.<br>
 #_   Автостартующие макросы выполняются все, независимо от приоритета. Очерёдность их исполнения не определена.
@@ -227,11 +237,11 @@ lv=2
 dt=Text
 nm=Обработчики событий
 ctime=3580139337
-mtime=3678018855
+mtime=3777006554
 <article>
 #_<markdown>
 #_
-#_Как и [стационарные макросы][1], обработчики событий загружаются из Lua-файлов (расширение `*.lua`), находящихся в папке `%FARPROFILE%\Macros\scripts` и её подпапках. Каждый Lua-файл может содержать вместе и макросы, и обработчики событий.
+#_Как и [стационарные макросы][1], обработчики событий загружаются из макрофайлов (расширения `*.lua` и `*.moon`), находящихся в папке `%FARPROFILE%\Macros\scripts` и её подпапках. Каждый макрофайл может содержать вместе и макросы, и обработчики событий.
 #_
 #_Загрузка обработчика происходит при вызове глобальной функции `Event`, которой передаётся один аргумент - таблица с параметрами обработчика. При успешной загрузке функция возвращает `true`.
 #_
@@ -256,7 +266,7 @@ mtime=3678018855
 #_При наличии нескольких обработчиков одного и того же события (т.е. обработчиков с одинаковым полем `group`), эти обработчики будут вызваны по очереди: обработчик с более высоким приоритетом вызывается раньше. Приоритет определяется динамически с учётом функции `condition`, если таковая имеется, как и для макросов.
 #_
 #_Событие `"ExitFAR"` вызывается в следующих случаях: (a) выход из Far Manager,
-#_(b) выгрузка плагина LuaMacro, \(c) выгрузка либо перезагрузка макросов.
+#_(b) выгрузка плагина LuaMacro, \(c) выгрузка либо перезагрузка макросов. Обработчик события получает один аргумент булевого типа: `false` для случаев (a) и (b); `true` для случая \(c).
 #_
 #_[1]: 75.html
 #_
@@ -342,10 +352,232 @@ mtime=3636460943
 </article>
 </node>
 <node>
+id=98
+lv=2
+dt=Text
+nm=Добавление панельных модулей
+ctime=3730113290
+mtime=3732088491
+<article>
+#_<markdown>
+#_
+#_"Панельный модуль" - это набор Lua-функций, помещённых в таблицу, который загружается функцией `PanelModule`.
+#_
+#_- Имена функций модуля и их параметры совпадают с функциями таблицы `export` (см. мануал LuaFAR).
+#_- Список экспортируемых функций модуля, поддерживаемых плагином:<br>
+#_`Analyse`, `ClosePanel`, `Compare`, `DeleteFiles`, `GetFiles`, `GetFindData`, `GetOpenPanelInfo`, `MakeDirectory`, `Open`, `ProcessHostFile`, `ProcessPanelEvent`, `ProcessPanelInput`, `PutFiles`, `SetDirectory`, `SetFindList`.
+#_- Каждый панельный модуль должен содержать таблицу `Info` с обязательным полем `Guid`. Прочие поля - опциональны.
+#_
+#_```
+#_-- Создадим панельный модуль
+#_local mod  = {}
+#_mod.Info = {
+#_  Guid        = win.Uuid("FBBC5FBF-AE9F-46EC-999C-C744F7D898B6"); -- обязательное поле
+#_  Version     = "";
+#_  Title       = "";
+#_  Description = "";
+#_  Author      = "";
+#_}
+#_
+#_-- Добавим только те "экспортируемые" функции, которые нужны для работы этого модуля
+#_mod.Analyse     = function(...) ...... end
+#_mod.Open        = function(...) ...... end
+#_mod.GetFindData = function(...) ...... end
+#_......
+#_
+#_-- Загрузим модуль
+#_PanelModule(mod)
+#_```
+#_
+#_**Примечания:**
+#_
+#_1. Для создания панели из командной строки или меню плагинов, должны использоваться существующие функции [`CommandLine`](96.html) и [`MenuItem`](90.html). Их функция `action()` должна вернуть 2 величины: (1) таблицу панельного модуля и (2) объект панели (любое не ложное значение Lua).
+#_1. Функция `mod.Open` вызывается плагином только со следующими значениями параметра `OpenFrom`:<br> `OPEN_ANALYSE`, `OPEN_FINDLIST` и `OPEN_SHORTCUT`.
+#_
+#_См. также: [Пример применения](99.html)
+#_
+</article>
+</node>
+<node>
+id=99
+lv=3
+dt=Text
+nm=Пример применения
+ctime=3730118337
+mtime=3732100030
+<article>
+#_<markdown>
+#_```
+#_if ({ far.AdvControl("ACTL_GETFARMANAGERVERSION", true) })[4] < 5171 then return end
+#_
+#_local F = far.Flags
+#_local Title ="Demo panel in LuaMacro"
+#_local mod = {}
+#_
+#_mod.Info = {
+#_  Guid = win.Uuid("715E5E90-DEB9-470A-84CE-7CF8D92A7B05")
+#_}
+#_
+#_local function FileToObject(FileName)
+#_  FileName = far.ConvertPath(FileName, "CPM_FULL")
+#_  local fp = io.open(FileName)
+#_  if fp then
+#_    local obj = { HostFile=FileName; List={} }
+#_    for line in fp:lines() do
+#_      table.insert(obj.List, {FileName=line})
+#_    end
+#_    fp:close()
+#_    return obj
+#_  end
+#_end
+#_
+#_function mod.Analyse(Data)
+#_  return Data.FileName and Data.FileName:sub(-5):lower() == ".abcd"
+#_end
+#_
+#_function mod.Open(OpenFrom, Guid, Item)
+#_  if OpenFrom == F.OPEN_ANALYSE then
+#_    return FileToObject(Item.FileName)
+#_  elseif OpenFrom == F.OPEN_SHORTCUT then
+#_    return FileToObject(Item.HostFile)
+#_  elseif OpenFrom == F.OPEN_FINDLIST then
+#_    -- If we uncomment the line "return {}", then this module will be
+#_    -- used instead of TmpPanel for displaying search results.
+#_    ---- return {}
+#_  end
+#_end
+#_
+#_function mod.GetFindData(object, handle, OpMode)
+#_  return object.List
+#_end
+#_
+#_function mod.GetOpenPanelInfo(object, handle)
+#_  return {
+#_    HostFile = object.HostFile;
+#_    PanelTitle = Title;
+#_    StartSortMode = F.SM_UNSORTED;
+#_    StartSortOrder = 0;
+#_    ShortcutData = "";
+#_    Flags = bit64.bor(F.OPIF_SHORTCUT, F.OPIF_ADDDOTS);
+#_  }
+#_end
+#_
+#_function mod.SetFindList (object, handle, Items)
+#_  object.List = Items
+#_  return true
+#_end
+#_
+#_MenuItem {
+#_  description = Title;
+#_  menu   = "Plugins";
+#_  area   = "Shell";
+#_  guid   = "5E1ECBD6-F6E1-4A02-AC90-DB49DB6E350C";
+#_  text   = Title;
+#_  action = function(OpenFrom, Item)
+#_    return mod, FileToObject(APanel.Current)
+#_  end;
+#_}
+#_
+#_CommandLine {
+#_  description = Title;
+#_  prefixes = "abcd";
+#_  action = function(prefix,text)
+#_    if text then return mod, FileToObject(text); end
+#_  end;
+#_}
+#_
+#_PanelModule(mod)
+#_```
+#_
+</article>
+</node>
+<node>
+id=102
+lv=2
+dt=Text
+nm=Контент-колонки
+ctime=3774015828
+mtime=3774016335
+<article>
+#_<markdown>
+#_
+#_Для поддержки контент-колонок используется функция `ContentColumns`.
+#_Она получает один аргумент - таблицу:
+#_
+#_```
+#_ContentColumns {
+#_  filemask         = "*.txt";                                 -- string (опциональное поле)
+#_  GetContentFields = function(colnames) ...... end;           -- function
+#_  GetContentData   = function(filename, colnames) ...... end; -- function
+#_}
+#_```
+#_
+#_**Примечания:**
+#_
+#_- Опциональное поле `filemask` определяет, какие файлы будут обработаны.
+#_Его умолчательное значение - `"*"` (все файлы).
+#_- Значения полей `GetContentFields` и `GetContentData` совпадают
+#_с экспортируемыми функциями `export.GetContentFields` и `export.GetContentData`
+#_(см. их описание в мануале LuaFAR).
+#_
+#_
+</article>
+</node>
+<node>
+id=103
+lv=3
+dt=Text
+nm=Пример применения
+ctime=3774015850
+mtime=3797419034
+<article>
+#_<markdown>
+#_```
+#_-- A content columns example.
+#_-- For this example to work a file panel mode should have a column type
+#_-- named either <text> or <c0>.
+#_
+#_if ({ far.AdvControl("ACTL_GETFARMANAGERVERSION", true) })[4] < 5442 then return end
+#_
+#_local col_set = { -- lower case keys
+#_  text=1, c0=1
+#_}
+#_
+#_ContentColumns {
+#_  filemask = "*.txt,*.lua,*.c,*.h,*.cpp";
+#_
+#_  GetContentFields = function(colnames)
+#_    for _,v in ipairs(colnames) do
+#_      if col_set[v:lower()] then return true end
+#_    end
+#_  end;
+#_
+#_  -- display text at the file beginning
+#_  GetContentData = function(filename, colnames)
+#_    local fp = io.open(filename)
+#_    if fp then
+#_      local s = fp:read(512)
+#_      fp:close()
+#_      if s then
+#_        local out = {}
+#_        s = string.gsub(s, "%s+", " ")
+#_        for k,v in ipairs(colnames) do
+#_          if col_set[v:lower()] then out[k]=s end
+#_        end
+#_        return out
+#_      end
+#_    end
+#_  end;
+#_}
+#_```
+#_
+</article>
+</node>
+<node>
 id=77
 lv=2
 dt=Text
-nm=Модули
+nm=Внешние модули
 ctime=3580139041
 mtime=3710685784
 <article>
@@ -381,7 +613,7 @@ mtime=3617996565
 id=92
 lv=2
 dt=Text
-nm=Работа с командной строки
+nm=Работа из командной строки
 ctime=3617996372
 mtime=3637689226
 <article>
@@ -719,7 +951,7 @@ lv=2
 dt=Text
 nm=mf
 ctime=3553243522
-mtime=3659609053
+mtime=3778309747
 <article>
 #_**Свойства:** нет.
 #_
@@ -727,33 +959,36 @@ mtime=3659609053
 #_
 #_  abs                len
 #_  `acall`              max
-#_  akey               `mdelete`
-#_  asc                min
-#_  atoi               `mload`
-#_  beep               mmode
-#_  chr                mod
-#_  clip               `msave`
-#_  date               msgbox
-#_  env                `postmacro`
-#_  `eval`               print
-#_  `exit`               prompt
-#_  fattr              replace
-#_  fexist             rindex
-#_  float              size2str
-#_  flock              sleep
-#_  fmatch             string
-#_  fsplit             strpad
-#_  `GetMacroCopy`       strwrap
-#_  iif                substr
+#_  `AddExitHandler`     `mdelete`
+#_  akey               min
+#_  asc                `mload`
+#_  atoi               mmode
+#_  beep               mod
+#_  chr                `msave`
+#_  clip               msgbox
+#_  date               `postmacro`
+#_  `deserialize`        print           
+#_  env                `printconsole`
+#_  `eval`               prompt        
+#_  `exit`               replace         
+#_  fattr              rindex          
+#_  fexist             `serialize`
+#_  float              size2str  
+#_  flock              sleep     
+#_  fmatch             string    
+#_  fsplit             strpad    
+#_  `GetMacroCopy`       strwrap   
+#_  iif                substr  
 #_  index              testfolder
-#_  int                trim
-#_  itoa               ucase
+#_  int                trim      
+#_  itoa               ucase     
 #_  key                `usermenu`
-#_  `Keys`               waitkey
-#_  lcase              xlat
+#_  `Keys`               waitkey   
+#_  lcase              xlat    
 #_
 #_@@@
 #_[acall]: 91.html
+#_[deserialize]: 104.html
 #_[eval]: 79.html
 #_[exit]: 61.html
 #_[GetMacroCopy]: 72.html
@@ -763,7 +998,9 @@ mtime=3659609053
 #_[msave]: 12.html
 #_[postmacro]: 85.html
 #_[usermenu]: 69.html
-#_
+#_[AddExitHandler]: 100.html
+#_[printconsole]: 101.html
+#_[serialize]: 105.html
 #_
 #_{abs}: http://api.farmanager.com/ru/macro/macrocmd/prop_func/general.html#abs
 #_{akey}: http://api.farmanager.com/ru/macro/macrocmd/prop_func/general.html#akey
@@ -853,6 +1090,78 @@ mtime=3717267179
 </article>
 </node>
 <node>
+id=100
+lv=3
+dt=Text
+nm=AddExitHandler
+ctime=3732329181
+mtime=3770399603
+<article>
+#_mf.AddExitHandler (handler [, ...])
+#_
+#_**Параметры:**
+#_  handler:  function
+#_  ...    :  произвольное количество дополнительных величин
+#_
+#_**Возвращает:**
+#_  значения, переданные в ... (если есть)
+#_
+#_**Описание:**
+#_  1. Данная функция добавляет обработчик, который будет вызван по окончанию
+#_     исполнения макроса. Обработчику будут переданы все значения, указанные 
+#_     в ... (если есть).
+#_  2. Обработчик будет вызван как при нормальном завершении макроса, так и
+#_     в случае, если макрос был завершён по ошибке.
+#_  3. Если в процессе исполнения макроса было добавлено несколько обработчиков,
+#_     то они будут вызваны в порядке, обратном порядку их добавления.
+#_
+#_**Пример применения:**
+#_  local fp = mf.AddExitHandler(
+#_      function(p) if p then p:close() end; end,
+#_      io.open("some file.txt") )
+#_  -- *use fp; return from multiple places; do not care about closing fp*
+#_
+#_**См. также:**
+#_`Ограничения в использовании некоторых функций`
+#_
+#_@@@
+#_[Ограничения в использовании некоторых функций]: 62.html
+#_
+</article>
+</node>
+<node>
+id=104
+lv=3
+dt=Text
+nm=deserialize
+ctime=3778309316
+mtime=3778309996
+<article>
+#_value, errmsg = mf.deserialize (str)
+#_
+#_**Параметры:**
+#_  str:       string
+#_
+#_**Возвращает:**
+#_  value:     number, string, boolean, table, int64 or nil.
+#_  errmsg:    nil в случае успеха, string в случае неудачи.
+#_
+#_**Описание:**
+#_  Функция *deserialize* восстанавливает ранее сериализованное значение.
+#_  Если 2-е возвращаемое значение nil, то 1-е возвращаемое значение валидно.
+#_
+#_**Примечание**
+#_  int64 - особый тип userdata, создаваемый библиотекой bit64.
+#_
+#_**См. также:**
+#_`serialize`
+#_
+#_@@@
+#_[serialize]: 105.html
+#_
+</article>
+</node>
+<node>
 id=79
 lv=3
 dt=Text
@@ -935,9 +1244,9 @@ lv=3
 dt=Text
 nm=mdelete
 ctime=3552066075
-mtime=3623048003
+mtime=3754137327
 <article>
-#_mf.mdelete (key, name [, location])
+#_ret = mf.mdelete (key, name [, location])
 #_
 #_**Параметры:**
 #_  key:       string
@@ -945,7 +1254,7 @@ mtime=3623048003
 #_  location:  string ("roaming" или "local"; по умолчанию: "roaming")
 #_
 #_**Возвращает:**
-#_  ничего
+#_  ret:       boolean
 #_
 #_**Описание:**
 #_  Функция *mdelete* удаляет значение или ключ из базы данных.
@@ -960,9 +1269,9 @@ lv=3
 dt=Text
 nm=mload
 ctime=3551993209
-mtime=3711104214
+mtime=3754161081
 <article>
-#_ret = mf.mload (key, name [, location])
+#_value, errmsg = mf.mload (key, name [, location])
 #_
 #_**Параметры:**
 #_  key:       string
@@ -970,10 +1279,12 @@ mtime=3711104214
 #_  location:  string ("roaming" или "local"; по умолчанию: "roaming")
 #_
 #_**Возвращает:**
-#_  ret:      number, string, boolean, table, int64 или nil.
+#_  value:     number, string, boolean, table, int64 or nil.
+#_  errmsg:    nil в случае успеха, string в случае неудачи.
 #_
 #_**Описание:**
 #_  Функция *mload* читает значение из базы данных.
+#_  Если 2-е возвращаемое значение nil, то 1-е возвращаемое значение валидно.
 #_
 #_**Примечание**
 #_  int64 - особый тип userdata, создаваемый библиотекой bit64.
@@ -986,9 +1297,9 @@ lv=3
 dt=Text
 nm=msave
 ctime=3551993205
-mtime=3623048048
+mtime=3754051042
 <article>
-#_mf.msave (key, name, value [, location])
+#_ret = mf.msave (key, name, value [, location])
 #_
 #_**Параметры:**
 #_  key:       string
@@ -997,7 +1308,7 @@ mtime=3623048048
 #_  location:  string ("roaming" или "local"; по умолчанию: "roaming")
 #_
 #_**Возвращает:**
-#_  ничего
+#_  ret:       boolean
 #_
 #_**Описание:**
 #_  Функция *msave* сохраняет переданное значение в базу данных.
@@ -1035,6 +1346,68 @@ mtime=3599212421
 #_**Описание:**
 #_  Функция помещает новый макрос в очередь для исполнения. При исполнении макроса
 #_  будет вызвана функция *func*, которой будут переданы аргументы *...*
+#_
+</article>
+</node>
+<node>
+id=101
+lv=3
+dt=Text
+nm=printconsole
+ctime=3773253769
+mtime=3773253988
+<article>
+#_mf.printconsole (...)
+#_
+#_**Параметры:**
+#_  ...:     0 или более величин Lua
+#_
+#_**Возвращает:**
+#_  ничего
+#_
+#_**Описание:**
+#_  - Функция выводит ("печатает") свои аргументы в консоль.
+#_  - Она вставляет символ табуляции между аргументами.
+#_  - Нет необходимости вызывать *panel.GetUserScreen()* / *panel.SetUserScreen()*,
+#_    так как функция делает это сама.
+#_
+</article>
+</node>
+<node>
+id=105
+lv=3
+dt=Text
+nm=serialize
+ctime=3778309329
+mtime=3778310038
+<article>
+#_ret = mf.serialize (value)
+#_
+#_**Параметры:**
+#_  value:     nil, boolean, number, string, table, int64
+#_
+#_**Возвращает:**
+#_  ret:       string
+#_
+#_**Описание:**
+#_  Функция *serialize* преобразует переданное значение в строку.
+#_
+#_  При сохранении таблиц будут сохраняться:
+#_     ключи типов:     number, string, boolean, table
+#_     значения типов:  number, string, boolean, table, int64
+#_
+#_  Сохраняются вложенные таблицы, при этом рекурсивные вложения корректно обрабатываются.
+#_
+#_  Сохраняется связь таблицы с её метатаблицей.
+#_
+#_**Примечание**
+#_  int64 - особый тип userdata, создаваемый библиотекой bit64.
+#_
+#_**См. также:**
+#_`deserialize`
+#_
+#_@@@
+#_[deserialize]: 104.html
 #_
 </article>
 </node>
@@ -1288,12 +1661,12 @@ lv=3
 dt=Text
 nm=LoadCustomSortMode
 ctime=3585324926
-mtime=3666994029
+mtime=3807114127
 <article>
 #_Panel.LoadCustomSortMode (Mode, Settings)
 #_
 #_**Параметры:**
-#_  Mode:         режим сортировки, целое число >=100 и <=0x7FFFFFFF
+#_  Mode:         режим сортировки, целое число >=SM_USER и <=0x7FFFFFFF
 #_  Settings:     таблица, содержит следующие поля:
 #_                  *Condition*:
 #_                     Функция. Если задана, то будет вызвана с одним аргументом - режим сортировки.
@@ -1373,7 +1746,7 @@ mtime=3666994029
 #_  *-- Загрузить сортировку по длине имени файла.*
 #_  local ffi = require "ffi"
 #_  local C = ffi.C
-#_  Panel.LoadCustomSortMode (100,
+#_  Panel.LoadCustomSortMode (SM_USER+10,
 #_    { 
 #_      Compare = function(p1, p2, opt)
 #_        local l1, l2 = C.wcslen(p1.FileName), C.wcslen(p2.FileName)
@@ -1396,12 +1769,12 @@ lv=3
 dt=Text
 nm=SetCustomSortMode
 ctime=3585499487
-mtime=3676118664
+mtime=3807114155
 <article>
 #_Panel.SetCustomSortMode (Mode, whatpanel [, order])
 #_
 #_**Параметры:**
-#_  Mode:         режим сортировки, целое число >=100 и <=0x7FFFFFFF
+#_  Mode:         режим сортировки, целое число >=SM_USER и <=0x7FFFFFFF
 #_  whatpanel:    0=активная панель, 1=пассивная панель
 #_  order:        "auto"    - стандартный выбор направления сортировки (значение по умолчанию)
 #_                "current" - сохранить текущее направление сортировки в панели
@@ -1421,7 +1794,7 @@ mtime=3676118664
 #_  Macro {
 #_    description="Sort files by their name length";
 #_    area="Shell"; key="CtrlShiftF1";
-#_    action=function() Panel.SetCustomSortMode(100,0) end;
+#_    action=function() Panel.SetCustomSortMode(SM_USER+10,0) end;
 #_  }
 #_
 #_@@@
@@ -2105,13 +2478,14 @@ lv=2
 dt=Text
 nm=Ограничения в использовании некоторых функций
 ctime=3557323094
-mtime=3664364154
+mtime=3732330043
 <article>
 #_<markdown>
 #_Следующие функции имеют особенности реализации, которые накладывают определённые ограничения на их использование в макросах:
 #_
 #_* [`exit`][exit]
 #_* [`mf.acall`][acall]
+#_* [`mf.AddExitHandler`][AddExitHandler]
 #_* [`mf.usermenu`][usermenu] (в "асинхронном" режиме вызова)
 #_* [`Keys`][keys]
 #_* [`Plugin.Call`][plugincall]
@@ -2143,6 +2517,7 @@ mtime=3664364154
 #_[plugincall]: 65.html
 #_[exit]: 61.html
 #_[keys]: 4.html
+#_[AddExitHandler]: 100.html
 #_
 #_@@@
 #_{plugin.command}: http://api.farmanager.com/ru/macro/macrocmd/prop_func/general.html#plugin.command
@@ -2171,22 +2546,6 @@ mtime=3607111396
 #_        for k,v in pairs(Editor.properties) do .... end -- для свойств
 #_
 #_@@@
-#_
-</article>
-</node>
-<node>
-id=64
-lv=2
-dt=Text
-nm=unicode.utf8.cfind
-ctime=3559410790
-mtime=3559414983
-<article>
-#_<markdown>
-#_
-#_Эта функция аналогична `unicode.utf8.find`, кроме того, что она принимает входное
-#_смещение и возвращает выходные смещения в **символах**, а не в **байтах**.
-#_(Исключением являются "position captures", которые всё же возвращаются в байтах).
 #_
 </article>
 </node>

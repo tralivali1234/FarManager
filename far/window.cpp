@@ -31,14 +31,23 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "window.hpp"
+
+// Internal:
 #include "keybar.hpp"
 #include "manager.hpp"
 #include "syslog.hpp"
 #include "savescr.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 static int windowID=0;
 
@@ -87,28 +96,28 @@ bool window::HasSaveScreen() const
 	return SaveScr || ShadowSaveScr;
 }
 
-void window::SetDeleting(void)
+void window::SetDeleting()
 {
 	m_Deleting=true;
 }
 
-bool window::IsDeleting(void) const
+bool window::IsDeleting() const
 {
 	return m_Deleting;
 }
 
-void window::Pin(void)
+void window::Pin()
 {
 	++m_BlockCounter;
 }
 
-void window::UnPin(void)
+void window::UnPin()
 {
 	assert(m_BlockCounter>0);
 	--m_BlockCounter;
 }
 
-bool window::IsPinned(void) const
+bool window::IsPinned() const
 {
 	return m_BlockCounter>0;
 }

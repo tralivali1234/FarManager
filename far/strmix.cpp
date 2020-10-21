@@ -31,11 +31,11 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
-#include "RegExp.hpp"
+// Self:
 #include "strmix.hpp"
+
+// Internal:
+#include "RegExp.hpp"
 #include "lang.hpp"
 #include "config.hpp"
 #include "pathmix.hpp"
@@ -45,32 +45,56 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "encoding.hpp"
 #include "regex_helpers.hpp"
 #include "string_utils.hpp"
-#include "bitflags.hpp"
 #include "exception.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+#include "common/bytes_view.hpp"
+#include "common/from_string.hpp"
+#include "common/function_ref.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 string GroupDigits(unsigned long long Value)
 {
 	NUMBERFMT Fmt{};
 
-	wchar_t DecimalSeparator[] { locale::GetDecimalSeparator(), L'\0' };
-	wchar_t ThousandSeparator[] { locale::GetThousandSeparator(), L'\0' };
-
-	// TODO pick regional settings
+	// Not needed - can't be decimal
 	Fmt.NumDigits = 0;
+	// Don't care - can't be decimal
 	Fmt.LeadingZero = 1;
-	Fmt.Grouping = 3;
+
+	Fmt.Grouping = locale.digits_grouping();
+
+	wchar_t DecimalSeparator[]{ locale.decimal_separator(), L'\0' };
 	Fmt.lpDecimalSep = DecimalSeparator;
+
+	wchar_t ThousandSeparator[]{ locale.thousand_separator(), L'\0' };
 	Fmt.lpThousandSep = ThousandSeparator;
+
+	// Don't care - can't be negative
 	Fmt.NegativeOrder = 1;
 
-	string strSrc = str(Value);
-	const size_t Size = GetNumberFormat(LOCALE_USER_DEFAULT, 0, strSrc.data(), &Fmt, nullptr, 0);
-	wchar_t_ptr_n<MAX_PATH> Dest(Size);
-	GetNumberFormat(LOCALE_USER_DEFAULT, 0, strSrc.data(), &Fmt, Dest.get(), static_cast<int>(Size));
-	return { Dest.get(), Size - 1 };
+	auto Src = str(Value);
+	string Result;
+
+	if (os::detail::ApiDynamicErrorBasedStringReceiver(ERROR_INSUFFICIENT_BUFFER, Result, [&](span<wchar_t> Buffer)
+	{
+		const size_t Size = GetNumberFormat(LOCALE_USER_DEFAULT, 0, Src.c_str(), &Fmt, Buffer.data(), static_cast<int>(Buffer.size()));
+		return Size? Size - 1 : 0;
+	}))
+		return Result;
+
+	// Better than nothing
+	return Src;
 }
 
-wchar_t* InsertQuote(wchar_t *Str)
+wchar_t* legacy::InsertQuotes(wchar_t *Str)
 {
 	const auto QuoteChar = L'"';
 	size_t l = wcslen(Str);
@@ -90,20 +114,11 @@ wchar_t* InsertQuote(wchar_t *Str)
 	return Str;
 }
 
-wchar_t* QuoteSpace(wchar_t *Str)
+wchar_t* legacy::QuoteSpace(wchar_t *Str)
 {
-	if (wcspbrk(Str, Global->Opt->strQuotedSymbols.data()))
-	{
-		InsertQuote(Str);
+	if (Global->Opt->strQuotedSymbols.Get().find_first_of(Str) != string::npos)
+		InsertQuotes(Str);
 
-		// forward slash can't harm the quotation mark, but consistency is preferable
-		const auto Size = wcslen(Str);
-		if (IsSlash(Str[Size - 2]))
-		{
-			using std::swap;
-			swap(Str[Size - 2], Str[Size - 1]);
-		}
-	}
 	return Str;
 }
 
@@ -121,279 +136,228 @@ string InsertRegexpQuote(string strStr)
 
 string &QuoteSpace(string &strStr)
 {
-	if (strStr.find_first_of(Global->Opt->strQuotedSymbols) != string::npos)
-	{
+	if (strStr.find_first_of(Global->Opt->strQuotedSymbols.Get()) != string::npos)
 		inplace::quote(strStr);
-		
-		// forward slash can't harm the quotation mark, but consistency is preferable
-		if (IsSlash(*(strStr.end() - 2)))
-		{
-			std::iter_swap(strStr.end() - 2, strStr.end() - 1);
-		}
-	}
+
 	return strStr;
 }
 
-wchar_t* QuoteSpaceOnly(wchar_t *Str)
+wchar_t* legacy::QuoteSpaceOnly(wchar_t* Str)
 {
-	if (wcschr(Str,L' '))
-		InsertQuote(Str);
+	if (contains(Str, L' '))
+		InsertQuotes(Str);
 
 	return Str;
 }
 
-string& QuoteSpaceOnly(string &strStr)
-{
-	if (contains(strStr, L' '))
-		inplace::quote(strStr);
-
-	return strStr;
-}
-
-string &QuoteOuterSpace(string &strStr)
+void inplace::QuoteOuterSpace(string &strStr)
 {
 	if (!strStr.empty() && (strStr.front() == L' ' || strStr.back() == L' '))
 		inplace::quote(strStr);
-
-	return strStr;
 }
 
+// TODO: "…" is displayed as "." in raster fonts. Make it lng-customisable?
+static const auto Dots = L"…"sv;
 
-static const int DotsLen = 3;
-
-string& TruncStrFromEnd(string &strStr, int maxLength)
-{
-	assert(maxLength >= 0);
-	size_t MaxLength = static_cast<size_t>(std::max(0, maxLength));
-
-	if (strStr.size() > MaxLength)
-	{
-		strStr.resize(MaxLength);
-		if (MaxLength > (size_t)DotsLen)
-			strStr.replace(MaxLength-DotsLen, DotsLen, DotsLen, L'.');
-	}
-	return strStr;
-}
-
-wchar_t* TruncStrFromEnd(wchar_t *Str, int MaxLength)
+static auto legacy_operation(wchar_t* Str, int MaxLength, function_ref<void(span<wchar_t>, size_t, string_view)> const Handler)
 {
 	assert(MaxLength >= 0);
-	MaxLength=std::max(0, MaxLength);
+	const size_t Max = std::max(0, MaxLength);
 
-	if (Str)
-	{
-		int Length = static_cast<int>(wcslen(Str));
-
-		if (Length > MaxLength)
-		{
-			if (MaxLength > DotsLen)
-				std::fill_n(Str + MaxLength - DotsLen, DotsLen, L'.');
-
-			Str[MaxLength] = '\0';
-		}
-	}
-	return Str;
-}
-
-wchar_t* TruncStr(wchar_t *Str, int MaxLength)
-{
-	assert(MaxLength >= 0);
-	MaxLength = std::max(0, MaxLength);
-
-	if (Str)
-	{
-		int Length = static_cast<int>(wcslen(Str));
-
-		if (Length > MaxLength)
-		{
-			std::copy_n(Str + Length - MaxLength, MaxLength + 1, Str);
-			if (MaxLength > DotsLen)
-				std::fill_n(Str, DotsLen, L'.');
-		}
-	}
-	return Str;
-}
-
-string& TruncStr(string &strStr, int maxLength)
-{
-	assert(maxLength >= 0);
-	size_t MaxLength = static_cast<size_t>(std::max(0, maxLength));
-	size_t Length = strStr.size();
-
-	if (Length > MaxLength)
-	{
-		strStr = strStr.substr(Length-MaxLength, MaxLength);
-		if (MaxLength > (size_t)DotsLen)
-			strStr.replace(0, DotsLen, DotsLen, L'.');
-	}
-	return strStr;
-}
-
-wchar_t* TruncStrFromCenter(wchar_t *Str, int MaxLength)
-{
-	assert(MaxLength >= 0);
-	MaxLength=std::max(0, MaxLength);
-
-	if (!Str)
-		return nullptr;
-
-	const auto Length = static_cast<int>(wcslen(Str));
-	if (Length <= MaxLength)
+	if (!Str || !*Str)
 		return Str;
 
-	if (MaxLength > DotsLen)
-	{
-		int Len1 = (MaxLength - DotsLen) / 2;
-		int Len2 = MaxLength - DotsLen - Len1;
-		std::copy_n(L"...", DotsLen, Str + Len1);
-		std::copy_n(Str + Length - Len2, Len2, Str + Len1 + DotsLen);
-	}
+	const auto Size = wcslen(Str);
 
-	Str[MaxLength] = 0;
+	if (Size <= Max)
+		return Str;
+
+	Handler({ Str, Size }, Max, Dots.substr(0, Max));
 	return Str;
 }
 
-string& TruncStrFromCenter(string &strStr, int maxLength)
+wchar_t* legacy::truncate_right(wchar_t *Str, int MaxLength)
 {
-	assert(maxLength >= 0);
-	size_t MaxLength = static_cast<size_t>(std::max(0, maxLength));
-	size_t Length = strStr.size();
-
-	if (Length > MaxLength)
+	return legacy_operation(Str, MaxLength, [](span<wchar_t> const StrParam, size_t const MaxLengthParam, string_view const CurrentDots)
 	{
-		if (MaxLength > (size_t)DotsLen)
-		{
-			size_t start = (MaxLength - DotsLen) / 2;
-			strStr.replace(start, Length-MaxLength+DotsLen, DotsLen, L'.');
-		}
-		else
-			strStr.resize(MaxLength);
-	}
-	return strStr;
+		*copy_string(CurrentDots, StrParam.data() + MaxLengthParam - CurrentDots.size()) = {};
+	});
 }
 
-static int StartOffset(const string& Str)
+void inplace::truncate_right(string& Str, size_t const MaxLength)
+{
+	if (Str.size() <= MaxLength)
+		return;
+
+	const auto CurrentDots = Dots.substr(0, MaxLength);
+	Str.replace(MaxLength - CurrentDots.size(), Str.size() - MaxLength + CurrentDots.size(), CurrentDots);
+}
+
+string truncate_right(string Str, size_t const MaxLength)
+{
+	inplace::truncate_right(Str, MaxLength);
+	return Str;
+}
+
+string truncate_right(string_view const Str, size_t const MaxLength)
+{
+	return truncate_right(string(Str), MaxLength);
+}
+
+wchar_t* legacy::truncate_left(wchar_t *Str, int MaxLength)
+{
+	return legacy_operation(Str, MaxLength, [](span<wchar_t> const StrParam, size_t const MaxLengthParam, string_view const CurrentDots)
+	{
+		const auto Iterator = copy_string(CurrentDots, StrParam.begin());
+
+		const auto StrEnd = StrParam.end();
+		const auto StrBegin = StrEnd - MaxLengthParam + CurrentDots.size();
+
+		*std::copy(StrBegin, StrEnd, Iterator) = {};
+	});
+}
+
+void inplace::truncate_left(string& Str, size_t const MaxLength)
+{
+	if (Str.size() <= MaxLength)
+		return;
+
+	const auto CurrentDots = Dots.substr(0, MaxLength);
+	Str.replace(0, Str.size() - MaxLength + CurrentDots.size(), CurrentDots);
+}
+
+string truncate_left(string Str, size_t const MaxLength)
+{
+	inplace::truncate_left(Str, MaxLength);
+	return Str;
+}
+
+string truncate_left(string_view const Str, size_t const MaxLength)
+{
+	return truncate_left(string(Str), MaxLength);
+}
+
+wchar_t* legacy::truncate_center(wchar_t *Str, int MaxLength)
+{
+	return legacy_operation(Str, MaxLength, [](span<wchar_t> const StrParam, size_t const MaxLengthParam, string_view const CurrentDots)
+	{
+		const auto Iterator = copy_string(CurrentDots, StrParam.data() + (MaxLengthParam - CurrentDots.size()) / 2);
+
+		const auto StrEnd = StrParam.end();
+		const auto StrBegin = Iterator + (StrParam.size() - MaxLengthParam);
+
+		*std::copy(StrBegin, StrEnd, Iterator) = {};
+	});
+}
+
+void inplace::truncate_center(string& Str, size_t const MaxLength)
+{
+	if (Str.size() <= MaxLength)
+		return;
+
+	const auto CurrentDots = Dots.substr(0, MaxLength);
+	Str.replace((MaxLength - CurrentDots.size()) / 2, Str.size() - MaxLength + CurrentDots.size(), CurrentDots);
+}
+
+string truncate_center(string Str, size_t const MaxLength)
+{
+	inplace::truncate_center(Str, MaxLength);
+	return Str;
+}
+
+string truncate_center(string_view const Str, size_t const MaxLength)
+{
+	return truncate_center(string(Str), MaxLength);
+}
+
+static auto StartOffset(string_view const Str)
 {
 	size_t DirOffset = 0;
 	ParsePath(Str, &DirOffset);
-	return static_cast<int>(DirOffset);
+	return DirOffset;
 }
 
-wchar_t* TruncPathStr(wchar_t *Str, int MaxLength)
+wchar_t* legacy::truncate_path(wchar_t*Str, int MaxLength)
 {
-	assert(MaxLength >= 0);
-	MaxLength = std::max(0, MaxLength);
-
-	if (Str)
+	return legacy_operation(Str, MaxLength, [](span<wchar_t> const StrParam, size_t const MaxLengthParam, string_view const CurrentDots)
 	{
-		int nLength = static_cast<int>(wcslen(Str));
+		const auto Offset = std::min(StartOffset(StrParam.data()), MaxLengthParam - CurrentDots.size());
 
-		if (nLength > MaxLength)
-		{
-			int start = StartOffset(Str);
+		const auto Iterator = copy_string(CurrentDots, StrParam.begin() + Offset);
 
-			if (!start || start+2+DotsLen > MaxLength)
-				return TruncStr(Str, MaxLength);
+		const auto StrEnd = StrParam.end();
+		const auto StrBegin = StrEnd - MaxLengthParam + CurrentDots.size() + Offset;
 
-			std::fill_n(Str + start, DotsLen, L'.');
-			wcscpy(Str+start+DotsLen, Str+start+DotsLen+nLength-MaxLength);
-		}
-	}
+		*std::copy(StrBegin, StrEnd, Iterator) = {};
+	});
+}
+
+void inplace::truncate_path(string& Str, size_t const MaxLength)
+{
+	if (Str.size() <= MaxLength)
+		return;
+
+	const auto CurrentDots = Dots.substr(0, MaxLength);
+	const auto Offset = std::min(StartOffset(Str), MaxLength - CurrentDots.size());
+	Str.replace(Offset, Str.size() - MaxLength + CurrentDots.size(), CurrentDots);
+}
+
+string truncate_path(string Str, size_t const MaxLength)
+{
+	inplace::truncate_path(Str, MaxLength);
 	return Str;
 }
 
-string& TruncPathStr(string &strStr, int MaxLength)
+string truncate_path(string_view const Str, size_t const MaxLength)
 {
-	assert(MaxLength >= 0);
-	MaxLength = std::max(0, MaxLength);
-
-	int nLength = static_cast<int>(strStr.size());
-
-	if (nLength > MaxLength)
-	{
-		int start = StartOffset(strStr);
-
-		if (!start || start+DotsLen+2 > MaxLength)
-			return TruncStr(strStr, MaxLength);
-
-		strStr.replace(start, nLength-MaxLength+DotsLen, DotsLen, L'.');
-	}
-	return strStr;
+	return truncate_path(string(Str), MaxLength);
 }
 
-/* $ 02.02.2001 IS
-   Заменяет пробелами непечатные символы в строке. В настоящий момент
-   обрабатываются только cr и lf.
-*/
-string& RemoveUnprintableCharacters(string &strStr)
+bool IsCaseMixed(const string_view Str)
 {
-	std::replace_if(ALL_RANGE(strStr), IsEol, L' ');
-	return inplace::trim(strStr);
-}
-
-const wchar_t *GetCommaWord(const wchar_t *Src, string &strWord,wchar_t Separator)
-{
-	if (!*Src)
-		return nullptr;
-
-	const wchar_t *StartPtr = Src;
-	size_t WordLen;
-	bool SkipBrackets=false;
-
-	for (WordLen=0; *Src; Src++,WordLen++)
-	{
-		if (*Src==L'[' && wcschr(Src+1,L']'))
-			SkipBrackets=true;
-
-		if (*Src==L']')
-			SkipBrackets=false;
-
-		if (*Src==Separator && !SkipBrackets)
-		{
-			Src++;
-
-			while (std::iswblank(*Src))
-				Src++;
-
-			strWord.assign(StartPtr,WordLen);
-			return Src;
-		}
-	}
-
-	strWord.assign(StartPtr,WordLen);
-	return Src;
-}
-
-bool IsCaseMixed(const string_view& strSrc)
-{
-	const auto AlphaBegin = std::find_if(ALL_CONST_RANGE(strSrc), is_alpha);
-	if (AlphaBegin == strSrc.cend())
+	const auto AlphaBegin = std::find_if(ALL_CONST_RANGE(Str), is_alpha);
+	if (AlphaBegin == Str.cend())
 		return false;
 
 	const auto Case = is_lower(*AlphaBegin);
-	return std::any_of(AlphaBegin, strSrc.cend(), [Case](wchar_t c){ return is_alpha(c) && is_lower(c) != Case; });
+	return std::any_of(AlphaBegin, Str.cend(), [Case](wchar_t c){ return is_alpha(c) && is_lower(c) != Case; });
 }
 
 /* FileSizeToStr()
    Форматирование размера файла в удобочитаемый вид.
 */
-enum
+
+static const unsigned long long BytesInUnit[][2]
 {
-	UNIT_COUNT = 7, // byte, kilobyte, megabyte, gigabyte, terabyte, petabyte, exabyte.
+	{0x0000000000000001ull,                   1ull}, // B
+	{0x0000000000000400ull,                1000ull}, // KiB / KB
+	{0x0000000000100000ull,             1000000ull}, // MiB / MB
+	{0x0000000040000000ull,          1000000000ull}, // GiB / GB
+	{0x0000010000000000ull,       1000000000000ull}, // TiB / TB
+	{0x0004000000000000ull,    1000000000000000ull}, // PiB / PB
+	{0x1000000000000000ull, 1000000000000000000ull}, // EiB / EB
 };
+
+static const unsigned long long PrecisionMultiplier[]
+{
+	  1ull,
+	 10ull,
+	100ull,
+};
+
 
 static string& UnitStr(size_t Unit, bool Binary)
 {
-	static string Data[UNIT_COUNT][2];
-	return Data[Unit][Binary? 1 : 0];
+	static string Data[std::size(BytesInUnit)][2];
+	return Data[Unit][Binary? 0 : 1];
 }
 
 void PrepareUnitStr()
 {
-	for (int i=0; i<UNIT_COUNT; i++)
+	for (size_t i = 0; i != std::size(BytesInUnit); ++i)
 	{
-		UnitStr(i, false) = lower(msg(lng::MListBytes + i));
 		UnitStr(i, true) = upper(msg(lng::MListBytes + i));
+		UnitStr(i, false) = lower(msg(lng::MListBytes + i));
 	}
 }
 
@@ -407,30 +371,40 @@ string FileSizeToStr(unsigned long long FileSize, int WidthWithSign, unsigned lo
 
 	const size_t Width = std::abs(WidthWithSign);
 	const bool LeftAlign = WidthWithSign < 0;
-	const bool UseCommas = (ViewFlags & COLUMN_COMMAS) != 0;
-	const bool UseFloatSize = (ViewFlags & COLUMN_FLOATSIZE) != 0;
-	const bool UseCompact = (ViewFlags & COLUMN_ECONOMIC) != 0;
-	const bool UseUnit = (ViewFlags & COLUMN_USE_UNIT) != 0;
-	const bool ShowUnit = (ViewFlags & COLUMN_SHOWUNIT) != 0;
-	const bool UseBinaryUnit = (ViewFlags & COLUMN_THOUSAND) == 0;
-	const size_t MinUnit = (ViewFlags & COLUMN_UNIT_MASK) + 1;
+	const bool UseGroupDigits = (ViewFlags & COLFLAGS_GROUPDIGITS) != 0;
+	const bool UseFloatSize = (ViewFlags & COLFLAGS_FLOATSIZE) != 0;
+	const bool UseCompact = (ViewFlags & COLFLAGS_ECONOMIC) != 0;
+	const bool UseUnit = (ViewFlags & COLFLAGS_USE_MULTIPLIER) != 0;
+	const bool ShowUnit = (ViewFlags & COLFLAGS_SHOW_MULTIPLIER) != 0;
+	const bool UseBinaryUnit = (ViewFlags & COLFLAGS_THOUSAND) == 0;
+	const size_t MinUnit = (ViewFlags & COLFLAGS_MULTIPLIER_MASK & ~COLFLAGS_USE_MULTIPLIER) + 1;
 
-	static const auto BinaryDivider = std::make_pair(1024, std::log(1024));
-	static const auto DecimalDivider = std::make_pair(1000, std::log(1000));
+	constexpr auto
+		binary_index = 0,
+		decimal_index = 1,
+		log2_of_2014 = 10,
+		log10_of_1000 = 3;
 
-	const auto& Divider = ViewFlags & COLUMN_THOUSAND? DecimalDivider : BinaryDivider;
+	constexpr std::pair
+		BinaryDivider(binary_index, log2_of_2014),
+		DecimalDivider(decimal_index, log10_of_1000);
 
-	const auto& FormatSize = [&](string&& StrSize, size_t UnitIndex)
+	const auto& Divider = ViewFlags & COLFLAGS_THOUSAND? DecimalDivider : BinaryDivider;
+
+	const auto FormatSize = [&](string&& StrSize, size_t UnitIndex)
 	{
-		const auto& FitToWidth = [&](string&& Str)
+		const auto FitToWidth = [&](string Str)
 		{
 			if (!Width)
 				return Str;
 
 			if (Str.size() <= Width)
-				return (LeftAlign? inplace::pad_right : inplace::pad_left)(Str, Width, L' ');
+			{
+				(LeftAlign? inplace::pad_right : inplace::pad_left)(Str, Width, L' ');
+				return Str;
+			}
 
-			Str = (LeftAlign? inplace::cut_right : inplace::cut_left)(Str, Width - 1);
+			(LeftAlign? inplace::cut_right : inplace::cut_left)(Str, Width - 1);
 			Str.insert(LeftAlign? Str.end() : Str.begin(), L'\x2026');
 			return Str;
 		};
@@ -438,12 +412,13 @@ string FileSizeToStr(unsigned long long FileSize, int WidthWithSign, unsigned lo
 		if (!UnitIndex && !ShowUnit)
 			return FitToWidth(std::move(StrSize));
 
-		return FitToWidth(concat(StrSize, UseCompact? L""_sv : L" "_sv, UnitStr(UnitIndex, UseBinaryUnit).front()));
+		return FitToWidth(concat(StrSize, UseCompact? L""sv : L" "sv, UnitStr(UnitIndex, UseBinaryUnit).front()));
 	};
 
 	if (UseFloatSize)
 	{
-		const size_t UnitIndex = FileSize? std::log(FileSize) / Divider.second : 0;
+		const auto Numerator = FileSize? (ViewFlags & COLFLAGS_THOUSAND)? std::log10(FileSize) : std::log2(FileSize) : 0;
+		const size_t UnitIndex = Numerator / Divider.second;
 
 		string Str;
 
@@ -453,52 +428,54 @@ string FileSizeToStr(unsigned long long FileSize, int WidthWithSign, unsigned lo
 		}
 		else
 		{
-			const auto SizeInUnits = FileSize / std::pow(Divider.first, UnitIndex);
-
-			double Parts[2];
-			Parts[1] = std::modf(SizeInUnits, &Parts[0]);
-
-			auto Integral = static_cast<int>(Parts[0]);
+			const auto Denominator = BytesInUnit[UnitIndex][Divider.first];
+			const auto RawIntegral = FileSize / Denominator;
+			const auto RawFractional = static_cast<double>(FileSize % Denominator) / static_cast<double>(Denominator);
 
 			const auto FixedPrecision = 0; // 0 for floating, else fixed. TODO: option?
 
-			if (const auto NumDigits = FixedPrecision? FixedPrecision : Integral < 10? 2 : Integral < 100? 1 : 0)
+			if (const auto NumDigits = FixedPrecision? std::min(FixedPrecision, static_cast<int>(std::size(PrecisionMultiplier) - 1)) : RawIntegral < 10? 2 : RawIntegral < 100? 1 : 0)
 			{
-				const auto AjustedParts = [&]
+				const auto [IntegralPart, FractionalPart] = [&]
 				{
-					const auto Multiplier = std::pow(10, NumDigits);
-					const auto Value = Parts[1] * Multiplier;
+					const auto Multiplier = PrecisionMultiplier[NumDigits];
+					const auto FractionalDigits = RawFractional * static_cast<double>(Multiplier);
 					const auto UseRound = true;
-					const auto Fractional = static_cast<unsigned long long>(UseRound? std::round(Value) : Value);
-					return Fractional == Multiplier? std::make_pair(Integral + 1, 0ull) : std::make_pair(Integral, Fractional);
+					const auto RoundedFractionalDigits = static_cast<unsigned>(UseRound? std::round(FractionalDigits) : FractionalDigits);
+					return RoundedFractionalDigits == Multiplier? std::pair(RawIntegral + 1, 0u) : std::pair(RawIntegral, RoundedFractionalDigits);
 				}();
 
-				Str = concat(str(AjustedParts.first), locale::GetDecimalSeparator(), pad_left(str(AjustedParts.second), NumDigits, L'0'));
+				Str = concat(str(IntegralPart), locale.decimal_separator(), pad_left(str(FractionalPart), NumDigits, L'0'));
 			}
 			else
 			{
-				Str = str(static_cast<int>(std::round(SizeInUnits)));
+				Str = str(static_cast<unsigned long long>(std::round(static_cast<double>(RawIntegral) + RawFractional)));
 			}
 		}
 
 		return FormatSize(std::move(Str), UnitIndex);
 	}
 
-	const auto& ToStr = [UseCommas](auto Size)
+	const auto ToStr = [UseGroupDigits](auto Size)
 	{
-		return UseCommas? GroupDigits(Size) : str(Size);
+		return UseGroupDigits? GroupDigits(Size) : str(Size);
 	};
 
 	size_t UnitIndex = 0;
 	auto Str = ToStr(FileSize);
 
 	const auto SuffixSize = (ShowUnit || (Width && Str.size() > Width))? UseCompact? 1u : 2u : 0u;
-	
+
 	const auto MaxNumberWidth = Width > SuffixSize? Width - SuffixSize : 0;
 
 	while ((UseUnit && UnitIndex < MinUnit) || (Width && Str.size() > MaxNumberWidth))
 	{
-		if (unsigned long long SizeInUnits = std::round(FileSize / std::pow(Divider.first, UnitIndex + 1)))
+		const auto Denominator = BytesInUnit[UnitIndex + 1][Divider.first];
+		const auto IntegralPart = FileSize / Denominator;
+		const auto FractionalPart = static_cast<double>(FileSize % Denominator) / static_cast<double>(Denominator);
+		const auto SizeInUnits = IntegralPart + static_cast<unsigned long long>(std::round(FractionalPart));
+
+		if (SizeInUnits)
 		{
 			++UnitIndex;
 			Str = ToStr(SizeInUnits);
@@ -513,268 +490,109 @@ string FileSizeToStr(unsigned long long FileSize, int WidthWithSign, unsigned lo
 
 // Заменить в строке Str Count вхождений подстроки FindStr на подстроку ReplStr
 // Если Count == npos - заменять "до полной победы"
-// Return - количество замен
-size_t ReplaceStrings(string &strStr, const string_view& FindStr, const string_view& ReplStr, bool IgnoreCase, size_t Count)
+bool ReplaceStrings(string& strStr, const string_view FindStr, const string_view ReplStr, const bool IgnoreCase, size_t Count)
 {
 	if (strStr.empty() || FindStr.empty() || !Count)
-		return 0;
-
-	const auto AreEqual = IgnoreCase? equal_icase : equal;
+		return false;
 
 	size_t replaced = 0;
-	for (size_t I = 0, L = strStr.size(); I + FindStr.size() <= L; ++I)
+	size_t StartPos = 0;
+
+	while ((StartPos = IgnoreCase?
+		find_icase(strStr, FindStr, StartPos) :
+		strStr.find(FindStr, StartPos)
+		) != strStr.npos)
 	{
-		if (!AreEqual(string_view(strStr).substr(I, FindStr.size()), FindStr))
-			continue;
-
-		strStr.replace(I, FindStr.size(), ReplStr.raw_data(), ReplStr.size());
-
-		L += ReplStr.size();
-		L -= FindStr.size();
-
-		I += ReplStr.size();
-		I -= 1;
-
+		strStr.replace(StartPos, FindStr.size(), ReplStr);
+		StartPos += ReplStr.size();
 		++replaced;
 
-		if (Count != string::npos && !--Count)
+		if (replaced == Count)
 			break;
 	}
-	return replaced;
+
+	return replaced != 0;
 }
 
-/*
-From PHP 4.x.x
-Форматирует исходный текст по заданной ширине, используя
-разделительную строку. Возвращает строку SrcText свёрнутую
-в колонке, заданной параметром Width. Строка рубится при
-помощи строки Break.
-
-Разбивает на строки с выравниваением влево.
-
-Если параметр Flahs & FFTM_BREAKLONGWORD, то строка всегда
-сворачивается по заданной ширине. Так если у вас есть слово,
-которое больше заданной ширины, то оно будет разрезано на части.
-
-Example 1.
-FarFormatText("Пример строки, которая будет разбита на несколько строк по ширине в 20 символов.", 20 ,Dest, "\n", 0);
-Этот пример вернет:
----
-Пример строки,
-которая будет
-разбита на
-несколько строк по
-ширине в 20
-символов.
----
-
-Example 2.
-FarFormatText( "Эта строка содержит оооооооооооооччччччччеееень длиное слово", 9, Dest, nullptr, FFTM_BREAKLONGWORD);
-Этот пример вернет:
-
----
-Эта
-строка
-содержит
-ооооооооо
-ооооччччч
-чччеееень
-длиное
-слово
----
-
-*/
-
-enum FFTMODE
+void remove_duplicates(string& Str, wchar_t const Char, bool const IgnoreCase)
 {
-	FFTM_BREAKLONGWORD = bit(0),
-};
+	const auto NewEnd = IgnoreCase?
+		std::unique(ALL_RANGE(Str), [Char, Eq = equal_icase_t{}](wchar_t const First, wchar_t const Second){ return Eq(First, Char) && Eq(Second, Char); }) :
+		std::unique(ALL_RANGE(Str), [Char](wchar_t const First, wchar_t const Second){ return First == Char && Second == Char; });
 
-string& FarFormatText(const string& SrcText,      // источник
-                            size_t Width,         // заданная ширина
-                            string &strDestText,  // приёмник
-                            const wchar_t* Break, // разделитель, если = nullptr, принимается "\n"
-                            DWORD Flags)          // один из FFTM_*
-{
-	const auto breakchar = Break? Break : L"\n";
-
-	if (SrcText.empty())
-	{
-		strDestText.clear();
-		return strDestText;
-	}
-
-	if (SrcText.find_first_of(breakchar) == string::npos && SrcText.size() <= static_cast<size_t>(Width))
-	{
-		strDestText = SrcText;
-		return strDestText;
-	}
-
-	long l=0, pgr=0;
-	string newtext;
-	const wchar_t *text= SrcText.data();
-	long linelength = static_cast<long>(Width);
-	size_t breakcharlen = wcslen(breakchar);
-	int docut = Flags&FFTM_BREAKLONGWORD?1:0;
-	/* Special case for a single-character break as it needs no
-	   additional storage space */
-
-	if (breakcharlen == 1 && !docut)
-	{
-		newtext = text;
-		size_t i = 0;
-
-		while (i < newtext.size())
-		{
-			/* prescan line to see if it is greater than linelength */
-			l = 0;
-
-			while (i+l < newtext.size() && newtext[i+l] != breakchar[0])
-			{
-				if (newtext[i+l] == L'\0')
-				{
-					l--;
-					break;
-				}
-
-				l++;
-			}
-
-			if (l >= linelength)
-			{
-				pgr = l;
-				l = linelength;
-
-				/* needs breaking; work backwards to find previous word */
-				while (l >= 0)
-				{
-					if (newtext[i+l] == L' ')
-					{
-						newtext[i+l] = breakchar[0];
-						break;
-					}
-
-					l--;
-				}
-
-				if (l == -1)
-				{
-					/* couldn't break is backwards, try looking forwards */
-					l = linelength;
-
-					while (l <= pgr)
-					{
-						if (newtext[i+l] == L' ')
-						{
-							newtext[i+l] = breakchar[0];
-							break;
-						}
-
-						l++;
-					}
-				}
-			}
-
-			i += l+1;
-		}
-	}
-	else
-	{
-		int last = 0;
-		long i = 0;
-
-		while (text[i] != L'\0')
-		{
-			/* prescan line to see if it is greater than linelength */
-			l = 0;
-
-			while (text[i+l] != L'\0')
-			{
-				if (text[i+l] == breakchar[0])
-				{
-					if (breakcharlen == 1 || starts_with(text + i + l, { breakchar, breakcharlen }))
-						break;
-				}
-
-				l++;
-			}
-
-			if (l >= linelength)
-			{
-				pgr = l;
-				l = linelength;
-
-				/* needs breaking; work backwards to find previous word */
-				while (l >= 0)
-				{
-					if (text[i+l] == L' ')
-					{
-						newtext.append(text+last, i+l-last);
-						newtext += breakchar;
-						last = i + l + 1;
-						break;
-					}
-
-					l--;
-				}
-
-				if (l == -1)
-				{
-					/* couldn't break it backwards, try looking forwards */
-					l = linelength - 1;
-
-					while (l <= pgr)
-					{
-						if (!docut)
-						{
-							if (text[i+l] == L' ')
-							{
-								newtext.append(text+last, i+l-last);
-								newtext += breakchar;
-								last = i + l + 1;
-								break;
-							}
-						}
-
-						if (docut == 1)
-						{
-							if (text[i+l] == L' ' || l > i-last)
-							{
-								newtext.append(text+last, i+l-last+1);
-								newtext += breakchar;
-								last = i + l + 1;
-								break;
-							}
-						}
-
-						l++;
-					}
-				}
-
-				i += l+1;
-			}
-			else
-			{
-				i += (l ? l : 1);
-			}
-		}
-
-		if (i+l > last)
-		{
-			newtext += text+last;
-		}
-	}
-
-	strDestText = newtext;
-	return strDestText;
+	Str.resize(NewEnd - Str.begin());
 }
 
-bool FindWordInString(const string& Str, size_t CurPos, size_t& Begin, size_t& End, const string& WordDiv0)
+bool wrapped_text::get(bool Reset, string_view& Value) const
+{
+	// TODO: implement in terms of enum_lines to support all kinds of EOLs?
+
+	if (Reset)
+		m_Tail = m_Str;
+
+	if (m_Tail.empty())
+		return false;
+
+	const auto LineBreaks = L"\n"sv;
+	const auto WordSpaceBreaks = L" "sv;
+	const auto WordOtherBreaks = L",-"sv; // TODO: Opt.WordDiv?
+
+	const auto advance = [&](size_t TokenEnd, size_t SeparatorSize)
+	{
+		Value = m_Tail.substr(0, TokenEnd);
+		m_Tail.remove_prefix(TokenEnd + SeparatorSize);
+		return true;
+	};
+
+	// Try to take a line, drop line breaks
+	auto ChopSize = m_Tail.find_first_of(LineBreaks);
+	auto BreaksSize = 1;
+
+	if (ChopSize == m_Tail.npos)
+	{
+		ChopSize = m_Tail.size();
+		BreaksSize = 0;
+	}
+
+	if (ChopSize <= m_Width)
+		return advance(ChopSize, BreaksSize);
+
+	// Try to take some words, drop spaces
+	ChopSize = m_Tail.find_last_of(WordSpaceBreaks, m_Width);
+	BreaksSize = 1;
+
+	if (ChopSize == m_Tail.npos)
+	{
+		ChopSize = m_Tail.size();
+		BreaksSize = 0;
+	}
+
+	if (ChopSize <= m_Width)
+		return advance(ChopSize, BreaksSize);
+
+	// Try to take some words, keep separators
+	ChopSize = m_Tail.find_last_of(WordOtherBreaks, m_Width);
+	BreaksSize = 1;
+
+	if (ChopSize == m_Tail.npos)
+	{
+		ChopSize = m_Tail.size();
+		BreaksSize = 0;
+	}
+
+	if (ChopSize + BreaksSize <= m_Width)
+		return advance(ChopSize + BreaksSize, 0);
+
+	// Take a part of the word
+	return advance(m_Width, 0);
+}
+
+bool FindWordInString(string_view const Str, size_t CurPos, size_t& Begin, size_t& End, string_view const WordDiv0)
 {
 	if (Str.empty() || CurPos > Str.size())
 		return false;
 
-	const auto WordDiv = WordDiv0 + GetSpacesAndEols();
+	const auto WordDiv = concat(WordDiv0, GetSpaces(), GetEols());
 
 	if (!CurPos)
 	{
@@ -824,18 +642,18 @@ bool FindWordInString(const string& Str, size_t CurPos, size_t& Begin, size_t& E
 	return Begin != End;
 }
 
-bool CheckFileSizeStringFormat(const string& FileSizeStr)
+bool CheckFileSizeStringFormat(string_view const FileSizeStr)
 {
 	static const std::wregex SizeRegex(RE_BEGIN RE_ANY_OF(L"0-9") RE_ONE_OR_MORE_LAZY RE_ANY_OF(L"BKMGTPE") RE_ZERO_OR_ONE_GREEDY RE_END, std::regex::icase | std::regex::optimize);
-	return std::regex_search(FileSizeStr, SizeRegex);
+	return std::regex_search(ALL_CONST_RANGE(FileSizeStr), SizeRegex);
 }
 
-unsigned long long ConvertFileSizeString(const string& FileSizeStr)
+unsigned long long ConvertFileSizeString(string_view const FileSizeStr)
 {
 	if (!CheckFileSizeStringFormat(FileSizeStr))
 		return 0;
 
-	const auto n = std::stoull(FileSizeStr);
+	const auto n = from_string<unsigned long long>(FileSizeStr);
 
 	// https://en.wikipedia.org/wiki/Binary_prefix
 	// https://en.wikipedia.org/wiki/SI_prefix
@@ -851,205 +669,300 @@ unsigned long long ConvertFileSizeString(const string& FileSizeStr)
 	}
 }
 
-string ReplaceBrackets(const wchar_t *SearchStr, const string& ReplaceStr, const RegExpMatch* Match, size_t Count, const MatchHash* HMatch)
+namespace
 {
-	string result;
-	for (size_t i = 0, length = ReplaceStr.size(); i < length; ++i)
+	string ReplaceBrackets(
+		const string_view SearchStr,
+		const string_view ReplaceStr,
+		const RegExpMatch* Match,
+		size_t Count,
+		const MatchHash* HMatch,
+		int& CurPos,
+		int* SearchLength)
 	{
-		const auto CurrentChar = ReplaceStr[i];
-		bool common = true;
-
-		if (CurrentChar == L'$')
+		string result;
+		for (size_t i = 0, length = ReplaceStr.size(); i < length; ++i)
 		{
-			const auto TokenStart = i + 1;
+			const auto CurrentChar = ReplaceStr[i];
+			bool common = true;
 
-			if (TokenStart < length)
+			if (CurrentChar == L'$')
 			{
-				intptr_t start = 0, end = 0;
-				size_t ShiftLength = 0;
-				auto TokenEnd = TokenStart;
-				bool Success = false;
+				const auto TokenStart = i + 1;
 
-				while (TokenEnd != length && std::iswdigit(ReplaceStr[TokenEnd]))
+				if (TokenStart < length)
 				{
-					++TokenEnd;
-				}
+					intptr_t start = 0, end = 0;
+					size_t ShiftLength = 0;
+					auto TokenEnd = TokenStart;
+					bool Success = false;
 
-				if (TokenEnd != TokenStart)
-				{
-					size_t index = 0;
-					while (TokenEnd != TokenStart && (index = std::stoul(ReplaceStr.substr(TokenStart, TokenEnd - TokenStart))) >= Count)
+					while (TokenEnd != length && std::iswdigit(ReplaceStr[TokenEnd]))
 					{
-						--TokenEnd;
+						++TokenEnd;
 					}
 
 					if (TokenEnd != TokenStart)
 					{
-						Success = true;
-						start = Match[index].start;
-						end = Match[index].end;
-						ShiftLength = TokenEnd - TokenStart;
-					}
-				}
-				else
-				{
-					static const std::wregex re(RE_BEGIN RE_ESCAPE(L"{") RE_C_GROUP(RE_ANY_OF(L"\\w\\s") RE_ZERO_OR_MORE_LAZY) RE_ESCAPE(L"}"), std::regex::optimize);
-					std::wcmatch CMatch;
-					if (std::regex_search(ReplaceStr.data() + TokenStart, CMatch, re))
-					{
-						ShiftLength = CMatch[0].length();
-						if (HMatch)
+						size_t index = 0;
+						while (TokenEnd != TokenStart && (index = from_string<unsigned long>(ReplaceStr.substr(TokenStart, TokenEnd - TokenStart))) >= Count)
 						{
-							const auto Iterator = HMatch->Matches.find(string(CMatch[1].first, CMatch[1].second));
-							if (Iterator != HMatch->Matches.cend())
+							--TokenEnd;
+						}
+
+						if (TokenEnd != TokenStart)
+						{
+							Success = true;
+							start = Match[index].start;
+							end = Match[index].end;
+							ShiftLength = TokenEnd - TokenStart;
+						}
+					}
+					else
+					{
+						static const std::wregex re(RE_BEGIN RE_ESCAPE(L"{") RE_C_GROUP(RE_ANY_OF(L"\\w\\s") RE_ZERO_OR_MORE_LAZY) RE_ESCAPE(L"}"), std::regex::optimize);
+						std::wcmatch CMatch;
+						if (std::regex_search(ReplaceStr.data() + TokenStart, ReplaceStr.data() + (ReplaceStr.size() - TokenStart), CMatch, re))
+						{
+							ShiftLength = CMatch[0].length();
+							if (HMatch)
 							{
-								Success = true;
-								start = Iterator->second.start;
-								end = Iterator->second.end;
+								const auto Iterator = HMatch->Matches.find(string(CMatch[1].first, CMatch[1].second));
+								if (Iterator != HMatch->Matches.cend())
+								{
+									Success = true;
+									start = Iterator->second.start;
+									end = Iterator->second.end;
+								}
 							}
 						}
 					}
-				}
 
-				if (ShiftLength)
-				{
-					i += ShiftLength;
-					common = false;
-
-					if (Success)
+					if (ShiftLength)
 					{
-						result.append(SearchStr + start, end - start);
+						i += ShiftLength;
+						common = false;
+
+						if (Success)
+						{
+							result.append(SearchStr.data() + start, end - start);
+						}
 					}
 				}
 			}
+
+			if (common)
+			{
+				result += CurrentChar;
+			}
 		}
 
-		if (common)
-		{
-			result += CurrentChar;
-		}
+		*SearchLength = Match->end - Match->start;
+		CurPos = Match->start;
+		return result;
 	}
 
-	return result;
+	bool SearchStringRegex(
+		string_view const Source,
+		const RegExp& re,
+		RegExpMatch* const pm,
+		MatchHash* const hm,
+		intptr_t Position,
+		int const Reverse,
+		string& ReplaceStr,
+		int& CurPos,
+		int* SearchLength)
+	{
+		intptr_t n = re.GetBracketsCount();
+
+		if (!Reverse)
+		{
+			if (re.SearchEx(Source, Position, pm, n, hm))
+			{
+				ReplaceStr = ReplaceBrackets(Source, ReplaceStr, pm, n, hm, CurPos, SearchLength);
+				return true;
+			}
+
+			ReMatchErrorMessage(re);
+			return false;
+		}
+
+		bool found = false;
+		intptr_t half = 0;
+		intptr_t pos = 0;
+
+		for (;;)
+		{
+			if (!re.SearchEx(Source, pos, pm + half, n, hm))
+			{
+				ReMatchErrorMessage(re);
+				break;
+			}
+			pos = pm[half].start;
+			if (pos > Position)
+				break;
+
+			found = true;
+			++pos;
+			half = n - half;
+		}
+
+		if (found)
+		{
+			half = n - half;
+			ReplaceStr = ReplaceBrackets(Source, ReplaceStr, pm + half, n, hm, CurPos, SearchLength);
+		}
+
+		return found;
+	}
 }
 
-bool SearchString(const wchar_t* Source, int StrSize, const string& Str, const string &UpperStr, const string &LowerStr, RegExp &re, RegExpMatch *pm, MatchHash* hm, string& ReplaceStr, int& CurPos, int Case, int WholeWords, int Reverse, int Regexp, int PreserveStyle, int *SearchLength, const wchar_t* WordDiv)
+static bool CanContainWholeWord(string_view const Haystack, size_t const Offset, size_t const NeedleSize, string_view const WordDiv)
 {
-	int Position = CurPos;
+	const auto BlankOrWordDiv = [&WordDiv](wchar_t Ch)
+	{
+		return std::iswblank(Ch) || contains(WordDiv, Ch);
+	};
+
+	if (Offset && !BlankOrWordDiv(Haystack[Offset - 1]))
+		return false;
+
+	if (Offset + NeedleSize < Haystack.size() && !BlankOrWordDiv(Haystack[Offset + NeedleSize]))
+		return false;
+
+	return true;
+}
+
+bool SearchString(
+	string_view const Haystack,
+	string_view const Needle,
+	string_view const NeedleUpper,
+	string_view const NeedleLower,
+	const RegExp& re,
+	RegExpMatch* const pm,
+	MatchHash* const hm,
+	int& CurPos,
+	bool const Case,
+	bool const WholeWords,
+	bool const Reverse,
+	bool const Regexp,
+	int* const SearchLength,
+	string_view WordDiv)
+{
+	string Dummy;
+	return SearchAndReplaceString(
+		Haystack,
+		Needle,
+		NeedleUpper,
+		NeedleLower,
+		re,
+		pm,
+		hm,
+		Dummy,
+		CurPos,
+		Case,
+		WholeWords,
+		Reverse,
+		Regexp,
+		false,
+		SearchLength,
+		WordDiv
+	);
+}
+
+bool SearchAndReplaceString(
+	string_view const Haystack,
+	string_view const Needle,
+	string_view const NeedleUpper,
+	string_view const NeedleLower,
+	const RegExp& re,
+	RegExpMatch* const pm,
+	MatchHash* const hm,
+	string& ReplaceStr,
+	int& CurPos,
+	bool const Case,
+	bool const WholeWords,
+	bool const Reverse,
+	bool const Regexp,
+	bool const PreserveStyle,
+	int* const SearchLength,
+	string_view WordDiv)
+{
 	*SearchLength = 0;
 
-	if (!WordDiv)
-		WordDiv=Global->Opt->strWordDiv.data();
+	if (WordDiv.empty())
+		WordDiv = Global->Opt->strWordDiv;
 
-	if (!Regexp && PreserveStyle && PreserveStyleReplaceString(Source, StrSize, Str, ReplaceStr, CurPos, Case, WholeWords, WordDiv, Reverse, *SearchLength))
+	if (!Regexp && PreserveStyle && PreserveStyleReplaceString(Haystack, Needle, ReplaceStr, CurPos, Case, WholeWords, WordDiv, Reverse, *SearchLength))
 		return true;
+
+	if (Needle.empty())
+		return true;
+
+	auto Position = CurPos;
+	const auto HaystackSize = static_cast<int>(Haystack.size());
 
 	if (Reverse)
 	{
-		Position--;
+		// MZK 2018-04-01 BUGBUG: regex reverse search: "^$" does not match empty string
+		Position = std::min(Position - 1, HaystackSize - 1);
 
-		if (Position>=StrSize)
-			Position=StrSize-1;
-
-		if (Position<0)
+		if (Position < 0)
 			return false;
 	}
 
-	if ((Position<StrSize || (!Position && !StrSize)) && !Str.empty())
+	if (Regexp)
 	{
-		if (Regexp)
+		// Empty Haystack is ok for regex search, e.g. ^$
+		if ((Position || HaystackSize) && Position >= HaystackSize)
+			return false;
+
+		return SearchStringRegex(Haystack, re, pm, hm, Position, Reverse, ReplaceStr, CurPos, SearchLength);
+	}
+
+	if (Position >= HaystackSize)
+		return false;
+
+	const auto NeedleSize = *SearchLength = static_cast<int>(Needle.size());
+
+	for (int HaystackIndex = Position; HaystackIndex != -1 && HaystackIndex != HaystackSize; Reverse? --HaystackIndex : ++HaystackIndex)
+	{
+		if (WholeWords && !CanContainWholeWord(Haystack, HaystackIndex, NeedleSize, WordDiv))
+			continue;
+
+		for (size_t NeedleIndex = 0; ; ++NeedleIndex)
 		{
-			intptr_t n = re.GetBracketsCount();
-			bool found = false;
-			int half = 0;
-			if (!Reverse)
+			if (NeedleIndex == Needle.size())
 			{
-				if (re.SearchEx(Source, Source + Position, Source + StrSize, pm, n, hm))
+				CurPos = HaystackIndex;
+
+				// В случае PreserveStyle: если не получилось сделать замену c помощью PreserveStyleReplaceString,
+				// то хотя бы сохранить регистр первой буквы.
+				if (PreserveStyle && !ReplaceStr.empty() && is_alpha(ReplaceStr.front()) && is_alpha(Haystack[HaystackIndex]))
 				{
-					found = true;
+					if (is_upper(Haystack[HaystackIndex]))
+						ReplaceStr.front() = ::upper(ReplaceStr.front());
+					else if (is_lower(Haystack[HaystackIndex]))
+						ReplaceStr.front() = ::lower(ReplaceStr.front());
 				}
-				else
-				{
-					ReMatchErrorMessage(re);
-				}
+
+				return true;
+			}
+
+			if (HaystackIndex + NeedleIndex == Haystack.size())
+				break;
+
+			const auto Ch = Haystack[HaystackIndex + NeedleIndex];
+
+			if (Case)
+			{
+				if (Ch != Needle[NeedleIndex])
+					break;
 			}
 			else
 			{
-				int pos = 0;
-				for (;;)
-				{
-					if (!re.SearchEx(Source, Source + pos, Source + StrSize, pm + half, n, hm))
-					{
-						ReMatchErrorMessage(re);
-						break;
-					}
-					pos = static_cast<int>(pm[half].start);
-					if (pos > Position)
-						break;
-
-					found = true;
-					++pos;
-					half = n - half;
-				}
-				half = n - half;
-			}
-			if (found)
-			{
-				*SearchLength = pm[half].end - pm[half].start;
-				CurPos = pm[half].start;
-				ReplaceStr = ReplaceBrackets(Source, ReplaceStr, pm + half, n, hm);
-			}
-
-			return found;
-		}
-
-		if (Position==StrSize)
-			return false;
-
-		int Length = *SearchLength = (int)Str.size();
-
-		for (int I=Position; (Reverse && I>=0) || (!Reverse && I<StrSize); Reverse ? I--:I++)
-		{
-			for (int J=0;; J++)
-			{
-				if (!Str[J])
-				{
-					CurPos=I;
-
-					// В случае PreserveStyle: если не получилось сделать замену c помощью PreserveStyleReplaceString,
-					// то хотя бы сохранить регистр первой буквы.
-					if (PreserveStyle && !ReplaceStr.empty() && is_alpha(ReplaceStr.front()) && is_alpha(Source[I]))
-					{
-						if (is_upper(Source[I]))
-							ReplaceStr.front() = ::upper(ReplaceStr.front());
-						if (is_lower(Source[I]))
-							ReplaceStr.front() = ::lower(ReplaceStr.front());
-					}
-
-					return true;
-				}
-
-				if (WholeWords)
-				{
-					const auto locResultLeft = I <= 0 || std::iswblank(Source[I - 1]) || wcschr(WordDiv, Source[I - 1]);
-					const auto locResultRight = I + Length >= StrSize || std::iswblank(Source[I + Length]) || wcschr(WordDiv, Source[I + Length]);
-
-					if (!locResultLeft || !locResultRight)
-						break;
-				}
-
-				wchar_t Ch=Source[I+J];
-
-				if (Case)
-				{
-					if (Ch!=Str[J])
-						break;
-				}
-				else
-				{
-					if (Ch!=UpperStr[J] && Ch!=LowerStr[J])
-						break;
-				}
+				if (Ch != NeedleUpper[NeedleIndex] && Ch != NeedleLower[NeedleIndex])
+					break;
 			}
 		}
 	}
@@ -1059,44 +972,43 @@ bool SearchString(const wchar_t* Source, int StrSize, const string& Str, const s
 
 char IntToHex(int h)
 {
-	if (h > 15)
-		throw MAKE_FAR_EXCEPTION(L"Not a hex char");
-	if (h >= 10)
-		return 'A' + h - 10;
+	if (h > 0xF)
+		throw MAKE_FAR_FATAL_EXCEPTION(L"Not a hex char"sv);
+	if (h >= 0xA)
+		return 'A' + h - 0xA;
 	return '0' + h;
 }
 
 int HexToInt(char h)
 {
 	if (h >= 'a' && h <= 'f')
-		return h - 'a' + 10;
+		return h - 'a' + 0xA;
 
 	if (h >= 'A' && h <= 'F')
-		return h - 'A' + 10;
+		return h - 'A' + 0xA;
 
-	if (std::iswdigit(h))
+	if (std::isdigit(h))
 		return h - '0';
 
-	throw MAKE_FAR_EXCEPTION(L"Not a hex char");
+	throw MAKE_FAR_FATAL_EXCEPTION(L"Not a hex char"sv);
 }
 
-template<class S, class C>
-static S BlobToHexStringT(const void* Blob, size_t Size, C Separator)
+string BlobToHexString(bytes_view const Blob, wchar_t Separator)
 {
-	S Hex;
+	string Hex;
 
-	Hex.reserve(Size * (Separator? 3 : 2));
+	Hex.reserve(Blob.size() * (Separator? 3 : 2));
 
-	const auto CharBlob = reinterpret_cast<const char*>(Blob);
-	std::for_each(CharBlob, CharBlob + Size, [&](char i)
+	for (const auto& i: Blob)
 	{
-		Hex.push_back(IntToHex((i & 0xF0) >> 4));
-		Hex.push_back(IntToHex(i & 0x0F));
+		Hex.push_back(IntToHex((std::to_integer<int>(i) & 0xF0) >> 4));
+		Hex.push_back(IntToHex(std::to_integer<int>(i) & 0x0F));
 		if (Separator)
 		{
 			Hex.push_back(Separator);
 		}
-	});
+	}
+
 	if (Separator && !Hex.empty())
 	{
 		Hex.pop_back();
@@ -1104,12 +1016,11 @@ static S BlobToHexStringT(const void* Blob, size_t Size, C Separator)
 	return Hex;
 }
 
-template<typename char_type>
-static auto HexStringToBlobT(const basic_string_view<char_type>& Hex, char_type Separator)
+bytes HexStringToBlob(const string_view Hex, const wchar_t Separator)
 {
 	// Size shall be either 3 * N + 2 or even
 	if (!Hex.empty() && (Separator? Hex.size() % 3 != 2 : Hex.size() & 1))
-		throw MAKE_FAR_EXCEPTION(L"Incomplete hex string");
+		throw MAKE_FAR_FATAL_EXCEPTION(L"Incomplete hex string"sv);
 
 	const auto SeparatorSize = Separator? 1 : 0;
 	const auto StepSize = 2 + SeparatorSize;
@@ -1117,53 +1028,25 @@ static auto HexStringToBlobT(const basic_string_view<char_type>& Hex, char_type 
 	const auto BlobSize = AlignedSize / StepSize;
 
 	if (!BlobSize)
-		return bytes();
+		return {};
 
-	std::vector<char> Blob;
+	bytes Blob;
 	Blob.reserve(BlobSize);
 	for (size_t i = 0; i != AlignedSize; i += StepSize)
 	{
-		Blob.emplace_back(HexToInt(Hex[i]) << 4 | HexToInt(Hex[i + 1]));
+		Blob.push_back(std::byte(HexToInt(Hex[i]) << 4 | HexToInt(Hex[i + 1])));
 	}
 
-	return bytes::copy(bytes_view(Blob.data(), Blob.size()));
+	return Blob;
 }
 
-std::string BlobToHexString(const void* Blob, size_t Size, char Separator)
+string ExtractHexString(string_view const HexString)
 {
-	return BlobToHexStringT<std::string>(Blob, Size, Separator);
-}
-
-std::string BlobToHexString(const bytes_view& Blob, char Separator)
-{
-	return BlobToHexString(Blob.data(), Blob.size(), Separator);
-}
-
-bytes HexStringToBlob(const basic_string_view<char>& Hex, char Separator)
-{
-	return HexStringToBlobT(Hex, Separator);
-}
-
-string BlobToHexWString(const void* Blob, size_t Size, wchar_t Separator)
-{
-	return BlobToHexStringT<string>(Blob, Size, Separator);
-}
-
-string BlobToHexWString(const bytes_view& Blob, char Separator)
-{
-	return BlobToHexWString(Blob.data(), Blob.size(), Separator);
-}
-
-bytes HexStringToBlob(const string_view& Hex, wchar_t Separator)
-{
-	return HexStringToBlobT(Hex, Separator);
-}
-
-string ExtractHexString(const string& HexString)
-{
-	auto Result{ HexString };
+	const auto Trimmed = trim_right(HexString);
+	string Result;
+	Result.reserve((Trimmed.size() + 2) / 3 * 2);
 	// TODO: Fix these and trailing spaces in Dialog class?
-	Result.erase(std::remove(ALL_RANGE(Result), L' '), Result.end());
+	std::remove_copy(ALL_CONST_RANGE(Trimmed), std::back_inserter(Result), L' ');
 	if (Result.size() & 1)
 	{
 		// Odd length - hex string is not valid.
@@ -1175,48 +1058,411 @@ string ExtractHexString(const string& HexString)
 	return Result;
 }
 
-string ConvertHexString(const string& From, uintptr_t Codepage, bool FromHex)
+string ConvertHexString(string_view const From, uintptr_t Codepage, bool FromHex)
 {
 	const auto CompatibleCp = IsVirtualCodePage(Codepage)? CP_ACP : Codepage;
 	if (FromHex)
 	{
 		const auto Blob = HexStringToBlob(ExtractHexString(From), 0);
-		return encoding::get_chars(CompatibleCp, Blob.data(), Blob.size());
+		return encoding::get_chars(CompatibleCp, Blob);
 	}
 	else
 	{
 		const auto Blob = encoding::get_bytes(CompatibleCp, From);
-		return BlobToHexWString(Blob.data(), Blob.size(), 0);
+		return BlobToHexString(view_bytes(Blob), 0);
 	}
 }
 
 // dest и src НЕ ДОЛЖНЫ пересекаться
-char * xstrncpy(char * dest, const char * src, size_t DestSize)
+template<typename T>
+static void xncpy(T* dest, const T* src, size_t DestSize)
 {
-	char *tmpsrc = dest;
-
 	while (DestSize > 1 && (*dest++ = *src++) != 0)
 	{
 		DestSize--;
 	}
 
 	*dest = 0;
-	return tmpsrc;
 }
 
-wchar_t * xwcsncpy(wchar_t * dest, const wchar_t * src, size_t DestSize)
+void xstrncpy(char* dest, const char* src, size_t DestSize)
 {
-	wchar_t *tmpsrc = dest;
-
-	while (DestSize > 1 && (*dest++ = *src++) != 0)
-		DestSize--;
-
-	*dest = 0;
-	return tmpsrc;
+	return xncpy(dest, src, DestSize);
 }
 
-std::pair<string, string> split_name_value(const wchar_t* Line)
+void xwcsncpy(wchar_t* dest, const wchar_t* src, size_t DestSize)
 {
-	const auto SeparatorPos = wcschr(Line + 1, L'=');
-	return { { Line, SeparatorPos }, SeparatorPos + 1 };
+	return xncpy(dest, src, DestSize);
 }
+
+#ifdef ENABLE_TESTS
+
+#include "testing.hpp"
+
+TEST_CASE("ConvertFileSizeString")
+{
+	constexpr auto
+		B = 1ull,
+		K = B * 1024,
+		M = K * 1024,
+		G = M * 1024,
+		T = G * 1024,
+		P = T * 1024,
+		E = P * 1024;
+
+	static const struct
+	{
+		string_view Src;
+		uint64_t Result;
+	}
+	Tests[]
+	{
+		{ {},           0     },
+		{ {},           0     },
+		{ L"Beep"sv,    0     },
+		{ L"0"sv,       0 * B },
+		{ L"1"sv,       1 * B },
+		{ L"32K"sv,    32 * K },
+		{ L"640K"sv,  640 * K },
+		{ L"1M"sv,      1 * M },
+		{ L"345M"sv,  345 * M },
+		{ L"2G"sv,      2 * G },
+		{ L"3T"sv,      3 * T },
+		{ L"42P"sv,    42 * P },
+		{ L"12E"sv,    12 * E },
+		{ L"0E"sv,      0 * E },
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == ConvertFileSizeString(i.Src));
+	}
+}
+
+TEST_CASE("ReplaceStrings")
+{
+	static const struct
+	{
+		string_view Src, Find, Replace, Result;
+	}
+	Tests[]
+	{
+		{ L"lorem ipsum dolor"sv,    L"loREm"sv,                {},               L" ipsum dolor"sv,      },
+		{ L"lorem ipsum dolor"sv,    L"lorem"sv,                L"alpha"sv,       L"alpha ipsum dolor"sv, },
+		{ L"lorem ipsum dolor"sv,    L"m"sv,                    L"q"sv,           L"loreq ipsuq dolor"sv, },
+		{ L"lorem ipsum dolor"sv,    {},                        L"alpha"sv,       L"lorem ipsum dolor"sv, },
+		{ L"lorem ipsum dolor"sv,    {},                        {},               L"lorem ipsum dolor"sv, },
+		{ L"lorem ipsum dolor"sv,    L"lorem ipsum dolor"sv,    {},               {},                     },
+		{ L"lorem ipsum dolor"sv,    L"lorem ipsum dolor"sv,    L"bravo"sv,       L"bravo"sv,             },
+		{ L"lorem"sv,                L"lorem ipsum"sv,          L"charlie"sv,     L"lorem"sv,             },
+	};
+
+	string Src;
+	for (const auto& i: Tests)
+	{
+		Src = i.Src;
+		ReplaceStrings(Src, i.Find, i.Replace, true);
+		REQUIRE(i.Result == Src);
+	}
+}
+
+TEST_CASE("remove_duplicates")
+{
+	static const struct
+	{
+		wchar_t Char;
+		bool IgnoreCase;
+		string_view Src, Result;
+	}
+	Tests[]
+	{
+		{ L'1', false, {},               {},          },
+		{ L'2', false, L"1"sv,           L"1"sv,      },
+		{ L'1', false, L"12"sv,          L"12"sv,     },
+		{ L'2', false, L"122"sv,         L"12"sv,     },
+		{ L'1', false, L"122"sv,         L"122"sv,    },
+		{ L'1', false, L"111"sv,         L"1"sv,      },
+		{ L'1', false, L"1122"sv,        L"122"sv,    },
+		{ L'2', false, L"1122"sv,        L"112"sv,    },
+		{ L'a', false, L"qaaaz"sv,       L"qaz"sv,    },
+		{ L'b', false, L"qaaaz"sv,       L"qaaaz"sv,  },
+		{ L'a', false, L"qAaAz"sv,       L"qAaAz"sv,  },
+		{ L'a', true,  L"qqAaAzz"sv,     L"qqAzz"sv,  },
+		{ L'a', true,  L"qqaAazz"sv,     L"qqazz"sv,  },
+	};
+
+	string Src;
+	for (const auto& i: Tests)
+	{
+		Src = i.Src;
+		remove_duplicates(Src, i.Char, i.IgnoreCase);
+		REQUIRE(Src == i.Result);
+	}
+}
+
+TEST_CASE("wrapped_text")
+{
+	static const struct tests
+	{
+		string_view Src;
+		size_t Width;
+		std::initializer_list<const string_view> Result;
+	}
+	Tests[]
+	{
+		{ {}, 1, {
+			}
+		},
+		{ L"AB\nCD"sv, 0, {
+			L"AB"sv,
+			L"CD"sv,
+		}},
+		{ L"12345"sv, 1, {
+			L"1"sv,
+			L"2"sv,
+			L"3"sv,
+			L"4"sv,
+			L"5"sv,
+		}},
+		{ L"12345-67890,ABCDE"sv, 10, {
+			L"12345-"sv,
+			L"67890,"sv,
+			L"ABCDE"sv,
+		}},
+		{ L"Supercalifragilisticexpialidocious"sv, 5, {
+			L"Super"sv,
+			L"calif"sv,
+			L"ragil"sv,
+			L"istic"sv,
+			L"expia"sv,
+			L"lidoc"sv,
+			L"ious"sv,
+		}},
+		{ L"Dale a tu cuerpo alegría Macarena\nQue tu cuerpo es pa' darle alegría why cosa buena\nDale a tu cuerpo alegría, Macarena\nHey Macarena"sv, 35, {
+			L"Dale a tu cuerpo alegría Macarena"sv,
+			L"Que tu cuerpo es pa' darle alegría"sv,
+			L"why cosa buena"sv,
+			L"Dale a tu cuerpo alegría, Macarena"sv,
+			L"Hey Macarena"sv,
+		}},
+		{ L"I used to wonder what friendship could be\nUntil you all shared its magic with me"sv, 2000, {
+			L"I used to wonder what friendship could be"sv,
+			L"Until you all shared its magic with me"sv,
+		}},
+		{ L"Rah, rah, ah, ah, ah, roma, roma, ma. Gaga, ooh, la, la"sv, 10, {
+			L"Rah, rah,"sv,
+			L"ah, ah,"sv,
+			L"ah, roma,"sv,
+			L"roma, ma."sv,
+			L"Gaga, ooh,"sv,
+			L"la, la"sv,
+		}},
+		{ L"Ma-i-a hi\nMa-i-a hu\nMa-i-a ho\nMa-i-a ha-ha"sv, 3, {
+			L"Ma-"sv,
+			L"i-a"sv,
+			L"hi"sv,
+			L"Ma-"sv,
+			L"i-a"sv,
+			L"hu"sv,
+			L"Ma-"sv,
+			L"i-a"sv,
+			L"ho"sv,
+			L"Ma-"sv,
+			L"i-a"sv,
+			L"ha-"sv,
+			L"ha"sv,
+		}},
+	};
+
+	for (const auto& Test: Tests)
+	{
+		auto Iterator = Test.Result.begin();
+		for (const auto& i: wrapped_text(Test.Src, Test.Width))
+		{
+			REQUIRE(Iterator != Test.Result.end());
+
+			if (Test.Width)
+				REQUIRE(i.size() <= Test.Width);
+
+			REQUIRE(i == *Iterator);
+			++Iterator;
+		}
+
+		REQUIRE(Iterator == Test.Result.end());
+	}
+}
+
+TEST_CASE("truncate")
+{
+	static const struct tests
+	{
+		string_view Src;
+		size_t Size;
+		string_view ResultLeft, ResultCenter, ResultRight, ResultPath;
+	}
+	Tests[]
+	{
+		{ {},              0,  {},               {},               {},               {},              },
+		{ {},              1,  {},               {},               {},               {},              },
+		{ {},              2,  {},               {},               {},               {},              },
+		{ {},              3,  {},               {},               {},               {},              },
+		{ {},              4,  {},               {},               {},               {},              },
+
+		{ L"0"sv,          0,  {},               {},               {},               {},              },
+		{ L"0"sv,          1,  L"0"sv,           L"0"sv,           L"0"sv,           L"0"sv,          },
+		{ L"0"sv,          2,  L"0"sv,           L"0"sv,           L"0"sv,           L"0"sv,          },
+
+		{ L"01"sv,         0,  {},               {},               {},               {},              },
+		{ L"01"sv,         1,  L"…"sv,           L"…"sv,           L"…"sv,           L"…"sv,          },
+		{ L"01"sv,         2,  L"01"sv,          L"01"sv,          L"01"sv,          L"01"sv,         },
+		{ L"01"sv,         3,  L"01"sv,          L"01"sv,          L"01"sv,          L"01"sv,         },
+
+		{ L"012"sv,        0,  {},               {},               {},               {},              },
+		{ L"012"sv,        1,  L"…"sv,           L"…"sv,           L"…"sv,           L"…"sv,          },
+		{ L"012"sv,        2,  L"…2"sv,          L"…2"sv,          L"0…"sv,          L"…2"sv,         },
+		{ L"012"sv,        3,  L"012"sv,         L"012"sv,         L"012"sv,         L"012"sv,        },
+		{ L"012"sv,        4,  L"012"sv,         L"012"sv,         L"012"sv,         L"012"sv,        },
+
+		{ L"0123"sv,       0,  {},               {},               {},               {},              },
+		{ L"0123"sv,       1,  L"…"sv,           L"…"sv,           L"…"sv,           L"…"sv,          },
+		{ L"0123"sv,       2,  L"…3"sv,          L"…3"sv,          L"0…"sv,          L"…3"sv,         },
+		{ L"0123"sv,       3,  L"…23"sv,         L"0…3"sv,         L"01…"sv,         L"…23"sv,        },
+		{ L"0123"sv,       4,  L"0123"sv,        L"0123"sv,        L"0123"sv,        L"0123"sv,       },
+		{ L"0123"sv,       5,  L"0123"sv,        L"0123"sv,        L"0123"sv,        L"0123"sv,       },
+
+		{ L"0123456789"sv, 0,  {},               {},               {},               {},              },
+		{ L"0123456789"sv, 1,  L"…"sv,           L"…"sv,           L"…"sv,           L"…"sv,          },
+		{ L"0123456789"sv, 2,  L"…9"sv,          L"…9"sv,          L"0…"sv,          L"…9"sv,         },
+		{ L"0123456789"sv, 3,  L"…89"sv,         L"0…9"sv,         L"01…"sv,         L"…89"sv,        },
+		{ L"0123456789"sv, 4,  L"…789"sv,        L"0…89"sv,        L"012…"sv,        L"…789"sv,       },
+		{ L"0123456789"sv, 5,  L"…6789"sv,       L"01…89"sv,       L"0123…"sv,       L"…6789"sv,      },
+		{ L"0123456789"sv, 6,  L"…56789"sv,      L"01…789"sv,      L"01234…"sv,      L"…56789"sv,     },
+		{ L"0123456789"sv, 7,  L"…456789"sv,     L"012…789"sv,     L"012345…"sv,     L"…456789"sv,    },
+		{ L"0123456789"sv, 8,  L"…3456789"sv,    L"012…6789"sv,    L"0123456…"sv,    L"…3456789"sv,   },
+		{ L"0123456789"sv, 9,  L"…23456789"sv,   L"0123…6789"sv,   L"01234567…"sv,   L"…23456789"sv,  },
+		{ L"0123456789"sv, 10, L"0123456789"sv,  L"0123456789"sv,  L"0123456789"sv,  L"0123456789"sv, },
+		{ L"0123456789"sv, 20, L"0123456789"sv,  L"0123456789"sv,  L"0123456789"sv,  L"0123456789"sv, },
+
+		{ L"c:/123/456"sv, 0,  {},               {},               {},               {},              },
+		{ L"c:/123/456"sv, 1,  L"…"sv,           L"…"sv,           L"…"sv,           L"…"sv,          },
+		{ L"c:/123/456"sv, 2,  L"…6"sv,          L"…6"sv,          L"c…"sv,          L"c…"sv,         },
+		{ L"c:/123/456"sv, 3,  L"…56"sv,         L"c…6"sv,         L"c:…"sv,         L"c:…"sv,        },
+		{ L"c:/123/456"sv, 4,  L"…456"sv,        L"c…56"sv,        L"c:/…"sv,        L"c:/…"sv,       },
+		{ L"c:/123/456"sv, 5,  L"…/456"sv,       L"c:…56"sv,       L"c:/1…"sv,       L"c:/…6"sv,      },
+		{ L"c:/123/456"sv, 6,  L"…3/456"sv,      L"c:…456"sv,      L"c:/12…"sv,      L"c:/…56"sv,     },
+		{ L"c:/123/456"sv, 7,  L"…23/456"sv,     L"c:/…456"sv,     L"c:/123…"sv,     L"c:/…456"sv,    },
+		{ L"c:/123/456"sv, 8,  L"…123/456"sv,    L"c:/…/456"sv,    L"c:/123/…"sv,    L"c:/…/456"sv,   },
+		{ L"c:/123/456"sv, 9,  L"…/123/456"sv,   L"c:/1…/456"sv,   L"c:/123/4…"sv,   L"c:/…3/456"sv,  },
+		{ L"c:/123/456"sv, 10, L"c:/123/456"sv,  L"c:/123/456"sv,  L"c:/123/456"sv,  L"c:/123/456"sv, },
+		{ L"c:/123/456"sv, 20, L"c:/123/456"sv,  L"c:/123/456"sv,  L"c:/123/456"sv,  L"c:/123/456"sv, },
+	};
+
+	using handler = string(string_view, size_t);
+	using legacy_handler = wchar_t*(wchar_t*, int);
+	using result_ptr = decltype(&tests::ResultLeft);
+	using tp = std::tuple<handler*, legacy_handler*, result_ptr>;
+
+	static const std::array Functions
+	{
+		tp{ truncate_left,   legacy::truncate_left,   &tests::ResultLeft   },
+		tp{ truncate_center, legacy::truncate_center, &tests::ResultCenter },
+		tp{ truncate_right,  legacy::truncate_right,  &tests::ResultRight  },
+		tp{ truncate_path,   legacy::truncate_path,   &tests::ResultPath   },
+	};
+
+	for (const auto& i: Tests)
+	{
+		for (const auto& [Truncate, TruncateLegacy, StrAccessor]: Functions)
+		{
+			const auto Baseline = std::invoke(StrAccessor, i);
+
+			REQUIRE(Truncate(string(i.Src), i.Size) == Baseline);
+
+			string Buffer(i.Src);
+			REQUIRE(TruncateLegacy(Buffer.data(), static_cast<int>(i.Size)) == Baseline);
+		}
+	}
+}
+
+TEST_CASE("IsCaseMixed")
+{
+	static const struct
+	{
+		string_view Src;
+		bool Result;
+	}
+	Tests[]
+	{
+		{ {},             false },
+		{ L"123"sv,       false },
+		{ L"FUBAR"sv,     false },
+		{ L"burrito"sv,   false },
+		{ L"CamelCase"sv, true  },
+		{ L"sPoNgEbOb"sv, true  },
+		{ L"12345Nz67"sv, true  },
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(i.Result == IsCaseMixed(i.Src));
+	}
+}
+
+TEST_CASE("hex")
+{
+	static const struct
+	{
+		string_view Src, Numbers;
+		bytes_view Bytes;
+	}
+	Tests[]
+	{
+		{ {},            {},          {},                },
+		{ L" "sv,        {},          {},                },
+		{ L"  "sv,       {},          {},                },
+		{ L"12 "sv,      L"12"sv,     "\x12"_bv,         },
+		{ L"12 3"sv,     L"1203"sv,   "\x12\x03"_bv,     },
+		{ L"12 34"sv,    L"1234"sv,   "\x12\x34"_bv,     },
+		{ L"12 34 56"sv, L"123456"sv, "\x12\x34\x56"_bv, },
+	};
+
+	for (const auto& i: Tests)
+	{
+		REQUIRE(ExtractHexString(i.Src) == i.Numbers);
+		REQUIRE(HexStringToBlob(i.Numbers, 0) == i.Bytes);
+		REQUIRE(BlobToHexString(view_bytes(i.Bytes), 0) == i.Numbers);
+	}
+}
+
+TEST_CASE("xwcsncpy")
+{
+	static const struct
+	{
+		string_view Src;
+	}
+	Tests[]
+	{
+		{ L""sv,      },
+		{ L"1"sv,     },
+		{ L"12"sv,    },
+		{ L"123"sv,   },
+		{ L"1234"sv,  },
+		{ L"12345"sv, },
+	};
+
+	const auto MaxBufferSize = std::max_element(ALL_CONST_RANGE(Tests), [](const auto& a, const auto& b){ return a.Src.size() < b.Src.size(); })->Src.size() + 1;
+
+	for (size_t BufferSize = 0; BufferSize != MaxBufferSize + 1; ++BufferSize)
+	{
+		for (const auto& i: Tests)
+		{
+			wchar_t Buffer[10];
+			assert(std::size(Buffer) >= BufferSize);
+			xwcsncpy(Buffer, i.Src.data(), BufferSize);
+			const auto ResultSize = BufferSize? std::min(i.Src.size(), BufferSize - 1) : 0;
+			REQUIRE(std::equal(i.Src.cbegin(), i.Src.cbegin() + ResultSize, Buffer, Buffer + ResultSize));
+			REQUIRE(Buffer[ResultSize] == L'\0');
+		}
+	}
+}
+#endif

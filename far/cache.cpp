@@ -30,10 +30,19 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "cache.hpp"
+
+// Internal:
+#include "platform.fs.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 CachedRead::CachedRead(os::fs::file& File, size_t BufferSize):
 	m_File(File),
@@ -54,16 +63,15 @@ void CachedRead::AdjustAlignment()
 	Spq.PropertyId = StorageAccessAlignmentProperty;
 
 	STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR Saad;
-	DWORD BytesReturned;
 
-	if (m_File.IoControl(IOCTL_STORAGE_QUERY_PROPERTY, &Spq, sizeof(Spq), &Saad, sizeof(Saad), &BytesReturned))
+	if (m_File.IoControl(IOCTL_STORAGE_QUERY_PROPERTY, &Spq, sizeof(Spq), &Saad, sizeof(Saad)))
 	{
 		if (Saad.BytesPerPhysicalSector > 512 && Saad.BytesPerPhysicalSector <= 256*1024)
 		{
 			m_Alignment = static_cast<int>(Saad.BytesPerPhysicalSector);
 			BufferSize = 16 * Saad.BytesPerPhysicalSector;
 		}
-		m_File.IoControl(FSCTL_ALLOW_EXTENDED_DASD_IO, nullptr, 0, nullptr, 0, &BytesReturned, nullptr);
+		(void)m_File.IoControl(FSCTL_ALLOW_EXTENDED_DASD_IO, nullptr, 0, nullptr, 0);
 	}
 
 	if (BufferSize > m_Buffer.size())
@@ -119,7 +127,7 @@ bool CachedRead::Read(void* Data, size_t DataSize, size_t* BytesRead)
 			Result = true;
 
 			const auto Actual = std::min(m_BytesLeft, DataSize);
-			memcpy(Data, &m_Buffer[m_ReadSize - m_BytesLeft], Actual);
+			copy_memory(&m_Buffer[m_ReadSize - m_BytesLeft], Data, Actual);
 			Data = static_cast<char*>(Data) + Actual;
 			m_BytesLeft -= Actual;
 			m_File.SetPointer(Actual, &m_LastPtr, FILE_CURRENT);
@@ -164,7 +172,7 @@ bool CachedRead::FillBuffer()
 	if (m_File.GetSize(FileSize) && Pointer - Shift + m_Buffer.size() > FileSize)
 		ReadSize = FileSize - Pointer + Shift;
 
-	auto Result = m_File.Read(m_Buffer.data(), ReadSize, m_ReadSize);
+	const auto Result = m_File.Read(m_Buffer.data(), ReadSize, m_ReadSize);
 	if (Result)
 	{
 		if (m_ReadSize > static_cast<size_t>(Shift))

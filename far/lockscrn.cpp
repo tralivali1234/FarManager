@@ -31,11 +31,20 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "lockscrn.hpp"
+
+// Internal:
 #include "scrbuf.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 LockScreen::LockScreen()
 {
@@ -46,5 +55,4 @@ LockScreen::LockScreen()
 LockScreen::~LockScreen()
 {
 	Global->ScrBuf->Unlock();
-	Global->ScrBuf->Flush();
 }

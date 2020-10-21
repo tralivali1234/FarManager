@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "scrbuf.hpp"
+
+// Internal:
 #include "farcolor.hpp"
 #include "ctrlobj.hpp"
 #include "interf.hpp"
@@ -42,56 +42,59 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "elevation.hpp"
 #include "console.hpp"
 #include "colormix.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+#include "common/2d/algorithm.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 enum
 {
-	SBFLAGS_FLUSHED         = bit(0),
-	SBFLAGS_FLUSHEDCURPOS   = bit(1),
-	SBFLAGS_FLUSHEDCURTYPE  = bit(2),
-	SBFLAGS_FLUSHEDTITLE    = bit(3),
+	SBFLAGS_FLUSHED         = 0_bit,
+	SBFLAGS_FLUSHEDCURPOS   = 1_bit,
+	SBFLAGS_FLUSHEDCURTYPE  = 2_bit,
+	SBFLAGS_FLUSHEDTITLE    = 3_bit,
 };
 
 //#if defined(SYSLOG_OT)
 // #define DIRECT_SCREEN_OUT
 //#endif
 
-static bool is_visible(int X1, int Y1, int X2, int Y2)
+static bool is_visible(rectangle const Where)
 {
-	return X1 <= ScrX && Y1 <= ScrY && X2 >= 0 && Y2 >= 0;
+	return Where.left <= ScrX && Where.top <= ScrY && Where.right >= 0 && Where.bottom >= 0;
 }
 
 ScreenBuf::ScreenBuf():
-	MacroChar(),
-	ElevationChar(),
-	SBFlags(SBFLAGS_FLUSHED | SBFLAGS_FLUSHEDCURPOS | SBFLAGS_FLUSHEDCURTYPE | SBFLAGS_FLUSHEDTITLE),
-	LockCount(0),
-	CurSize(0),
-	CurX(0),
-	CurY(0),
-	MacroCharUsed(false),
-	ElevationCharUsed(false),
-	CurVisible(false)
+	SBFlags(SBFLAGS_FLUSHED | SBFLAGS_FLUSHEDCURPOS | SBFLAGS_FLUSHEDCURTYPE | SBFLAGS_FLUSHEDTITLE)
 {
 }
 
 void ScreenBuf::DebugDump() const
 {
 #ifdef _DEBUG
-	string s(Buf.width() + 1, L' ');
-	s.back() = L'\n';
+	string s;
+	s.reserve(Buf.width() + 1);
 
 	for (size_t row_num = 0; row_num != Buf.height(); ++row_num)
 	{
 		const auto& row = Buf[row_num];
-		std::transform(ALL_CONST_RANGE(row), s.begin(), [](const auto& i) { return i.Char; });
-		OutputDebugString(s.data());
+		std::transform(ALL_CONST_RANGE(row), std::back_inserter(s), [](const auto& i) { return i.Char; });
+		s.push_back(L'\n');
+		os::debug::print(s);
+		s.clear();
 	}
 #endif
 }
 
 void ScreenBuf::AllocBuf(size_t rows, size_t cols)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
 	if (rows == Buf.height() && cols == Buf.width())
 		return;
@@ -104,129 +107,103 @@ void ScreenBuf::AllocBuf(size_t rows, size_t cols)
 */
 void ScreenBuf::FillBuf()
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	SMALL_RECT ReadRegion={0, 0, static_cast<SHORT>(Buf.width() - 1), static_cast<SHORT>(Buf.height() - 1)};
-	Console().ReadOutput(Buf, ReadRegion);
+	const SMALL_RECT ReadRegion={0, 0, static_cast<SHORT>(Buf.width() - 1), static_cast<SHORT>(Buf.height() - 1)};
+	console.ReadOutput(Buf, ReadRegion);
 	Shadow = Buf;
 	COORD CursorPosition;
-	Console().GetCursorPosition(CursorPosition);
-	CurX=CursorPosition.X;
-	CurY=CursorPosition.Y;
+	console.GetCursorPosition(CursorPosition);
+	m_CurPos = CursorPosition;
 }
 
 /* Записать Text в виртуальный буфер
 */
-void ScreenBuf::Write(int X,int Y,const FAR_CHAR_INFO *Text, size_t Size)
+void ScreenBuf::Write(int X, int Y, span<const FAR_CHAR_INFO> Text)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
 	if (X<0)
 	{
-		Text-=X;
-		Size = std::max(0, static_cast<int>(Size) + X);
+		Text.pop_front(std::min(static_cast<size_t>(-X), Text.size()));
 		X=0;
 	}
 
-	if (X >= static_cast<int>(Buf.width()) || Y >= static_cast<int>(Buf.height()) || !Size || Y<0)
+	if (X >= static_cast<int>(Buf.width()) || Y >= static_cast<int>(Buf.height()) || Text.empty() || Y < 0)
 		return;
 
-	if (static_cast<int>(X + Size) >= static_cast<int>(Buf.width()))
-		Size = Buf.width() - X; //??
+	if (static_cast<size_t>(X + Text.size()) > Buf.width())
+		Text.pop_back(Text.size() - (Buf.width() - X));
 
-	for (size_t i = 0; i != Size; ++i)
+	for (size_t i = 0; i != Text.size(); ++i)
 	{
-		auto& Element = Buf[Y][X + i];
-		SetVidChar(Element, Text[i].Char);
-		Element.Attributes = Text[i].Attributes;
+		Buf[Y][X + i] = Text[i];
 	}
 
 	SBFlags.Clear(SBFLAGS_FLUSHED);
-#ifdef DIRECT_SCREEN_OUT
-	Flush();
-#elif defined(DIRECT_RT)
 
-	if (Global->DirectRT)
-		Flush();
-
-#endif
+	debug_flush();
 }
 
 
 /* Читать блок из виртуального буфера.
 */
-void ScreenBuf::Read(int X1, int Y1, int X2, int Y2, matrix<FAR_CHAR_INFO>& Dest)
+void ScreenBuf::Read(rectangle Where, matrix<FAR_CHAR_INFO>& Dest)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	fix_coordinates(X1, Y1, X2, Y2);
+	fix_coordinates(Where);
 
-	for (auto i = Y1; i <= Y2; ++i)
+	for (auto i = Where.top; i <= Where.bottom; ++i)
 	{
 		const auto Row = Buf[i];
-		std::copy(&Row[X1], &Row[X2 + 1], &Dest[i - Y1][0]);
+		std::copy_n(Row.cbegin() + Where.left, Where.width(), Dest[i - Where.top].begin());
 	}
 }
 
 /* Изменить значение цветовых атрибутов в соответствии с маской
    (применяется для "создания" тени)
 */
-void ScreenBuf::ApplyShadow(int X1,int Y1,int X2,int Y2)
+void ScreenBuf::ApplyShadow(rectangle Where)
 {
-	if (!is_visible(X1, Y1, X2, Y2))
+	if (!is_visible(Where))
 		return;
 
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	fix_coordinates(X1, Y1, X2, Y2);
+	fix_coordinates(Where);
 
-	for_submatrix(Buf, X1, Y1, X2, Y2, [](FAR_CHAR_INFO& Element)
+	for_submatrix(Buf, Where, [](FAR_CHAR_INFO& Element)
 	{
 		Element.Attributes.BackgroundColor = 0;
 
-		if (Element.Attributes.IsFg4Bit())
+		const auto Mask = Element.Attributes.IsFg4Bit()? FOREGROUND_INTENSITY : 0x808080;
+
+		Element.Attributes.ForegroundColor &= ~Mask;
+		if (!colors::color_value(Element.Attributes.ForegroundColor))
 		{
-			Element.Attributes.ForegroundColor &= ~0x8;
-			if (!COLORVALUE(Element.Attributes.ForegroundColor))
-			{
-				Element.Attributes.ForegroundColor = 0x8;
-			}
-		}
-		else
-		{
-			Element.Attributes.ForegroundColor &= ~0x808080;
-			if (!COLORVALUE(Element.Attributes.ForegroundColor))
-			{
-				Element.Attributes.ForegroundColor = 0x808080;
-			}
+			Element.Attributes.ForegroundColor = Mask;
 		}
 	});
 
-#ifdef DIRECT_SCREEN_OUT
-	Flush();
-#elif defined(DIRECT_RT)
-
-	if (Global->DirectRT)
-		Flush();
-
-#endif
+	debug_flush();
 }
 
 /* Непосредственное изменение цветовых атрибутов
 */
 // used in block selection
-void ScreenBuf::ApplyColor(int X1,int Y1,int X2,int Y2,const FarColor& Color, bool PreserveExFlags)
+void ScreenBuf::ApplyColor(rectangle Where, const FarColor& Color, bool PreserveExFlags)
 {
-	if (!is_visible(X1, Y1, X2, Y2))
+	if (!is_visible(Where))
 		return;
 
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	fix_coordinates(X1, Y1, X2, Y2);
+	fix_coordinates(Where);
 
 	if(PreserveExFlags)
 	{
-		for_submatrix(Buf, X1, Y1, X2, Y2, [&Color](FAR_CHAR_INFO& Element)
+		for_submatrix(Buf, Where, [&Color](FAR_CHAR_INFO& Element)
 		{
 			const auto ExFlags = Element.Attributes.Flags&FCF_EXTENDEDFLAGS;
 			Element.Attributes = Color;
@@ -235,33 +212,28 @@ void ScreenBuf::ApplyColor(int X1,int Y1,int X2,int Y2,const FarColor& Color, bo
 	}
 	else
 	{
-		for_submatrix(Buf, X1, Y1, X2, Y2, [&Color](FAR_CHAR_INFO& Element)
+		for_submatrix(Buf, Where, [&Color](FAR_CHAR_INFO& Element)
 		{
 			Element.Attributes = Color;
 		});
 	}
 
-#ifdef DIRECT_SCREEN_OUT
-	Flush();
-#elif defined(DIRECT_RT)
-	if (Global->DirectRT)
-		Flush();
-#endif
+	debug_flush();
 }
 
 /* Непосредственное изменение цветовых атрибутов с заданным цветом исключением
 */
 // used in stream selection
-void ScreenBuf::ApplyColor(int X1,int Y1,int X2,int Y2,const FarColor& Color,const FarColor& ExceptColor, bool ForceExFlags)
+void ScreenBuf::ApplyColor(rectangle Where, const FarColor& Color, const FarColor& ExceptColor, bool ForceExFlags)
 {
-	if (!is_visible(X1, Y1, X2, Y2))
+	if (!is_visible(Where))
 		return;
 
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	fix_coordinates(X1, Y1, X2, Y2);
+	fix_coordinates(Where);
 
-	for_submatrix(Buf, X1, Y1, X2, Y2, [&](FAR_CHAR_INFO& Element)
+	for_submatrix(Buf, Where, [&](FAR_CHAR_INFO& Element)
 	{
 		if (Element.Attributes.ForegroundColor != ExceptColor.ForegroundColor || Element.Attributes.BackgroundColor != ExceptColor.BackgroundColor)
 		{
@@ -273,152 +245,143 @@ void ScreenBuf::ApplyColor(int X1,int Y1,int X2,int Y2,const FarColor& Color,con
 		}
 	});
 
-#ifdef DIRECT_SCREEN_OUT
-	Flush();
-#elif defined(DIRECT_RT)
-	if (Global->DirectRT)
-		Flush();
-#endif
+	debug_flush();
 }
 
 /* Закрасить прямоугольник символом Ch и цветом Color
 */
-void ScreenBuf::FillRect(int X1,int Y1,int X2,int Y2,WCHAR Ch,const FarColor& Color)
+void ScreenBuf::FillRect(rectangle Where, const FAR_CHAR_INFO& Info)
 {
-	if (!is_visible(X1, Y1, X2, Y2))
+	if (!is_visible(Where))
 		return;
 
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	FAR_CHAR_INFO CI;
-	CI.Attributes=Color;
-	SetVidChar(CI,Ch);
+	fix_coordinates(Where);
 
-	fix_coordinates(X1, Y1, X2, Y2);
-
-	for_submatrix(Buf, X1, Y1, X2, Y2, [&CI](FAR_CHAR_INFO& Element)
+	for_submatrix(Buf, Where, [&Info](FAR_CHAR_INFO& Element)
 	{
-		Element = CI;
+		Element = Info;
 	});
 
 	SBFlags.Clear(SBFLAGS_FLUSHED);
 
-#ifdef DIRECT_SCREEN_OUT
-	Flush();
-#elif defined(DIRECT_RT)
-	if (Global->DirectRT)
-		Flush();
-#endif
+	debug_flush();
 }
 
 /* "Сбросить" виртуальный буфер на консоль
 */
 void ScreenBuf::Flush(flush_type FlushType)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	if (!LockCount)
+	if (FlushType & flush_type::title && !SBFlags.Check(SBFLAGS_FLUSHEDTITLE))
 	{
-		if (FlushType & flush_type::cursor && !SBFlags.Check(SBFLAGS_FLUSHEDCURTYPE) && !CurVisible)
-		{
-			CONSOLE_CURSOR_INFO cci={CurSize,CurVisible};
-			Console().SetCursorInfo(cci);
-			SBFlags.Set(SBFLAGS_FLUSHEDCURTYPE);
-		}
+		console.SetTitle(m_Title);
+		SBFlags.Set(SBFLAGS_FLUSHEDTITLE);
+	}
 
-		if (FlushType & flush_type::screen)
+	if (LockCount)
+		return;
+
+	if (!console.IsViewportVisible())
+		return;
+
+	if (FlushType & flush_type::screen)
+	{
+		if (!Global->SuppressIndicators)
 		{
-			if (!Global->SuppressIndicators)
+			const auto SetMacroChar = [this](FAR_CHAR_INFO& Where, wchar_t Char, WORD Color)
 			{
-				const auto& SetMacroChar = [this](FAR_CHAR_INFO& Where, wchar_t Char, WORD Color)
-				{
-					Where.Char = Char;
-					Where.Attributes = colors::ConsoleColorToFarColor(Color);
-					SBFlags.Clear(SBFLAGS_FLUSHED);
-				};
+				Where.Char = Char;
+				Where.Attributes = colors::ConsoleColorToFarColor(Color);
+				SBFlags.Clear(SBFLAGS_FLUSHED);
+			};
 
-				if (Global->CtrlObject &&
-					(Global->CtrlObject->Macro.IsRecording() ||
-					(Global->CtrlObject->Macro.IsExecuting() && Global->Opt->Macro.ShowPlayIndicator))
-					)
-				{
-					auto& Where = Buf[0][0];
-					MacroChar = Where;
-					MacroCharUsed = true;
+			if (Global->CtrlObject &&
+				(Global->CtrlObject->Macro.IsRecording() ||
+				(Global->CtrlObject->Macro.IsExecuting() && Global->Opt->Macro.ShowPlayIndicator))
+				)
+			{
+				auto& Where = Buf[0][0];
+				MacroChar = Where;
+				MacroCharUsed = true;
 
-					Global->CtrlObject->Macro.IsRecording() ?
-						SetMacroChar(Where, L'R', B_LIGHTRED | F_WHITE) :
-						SetMacroChar(Where, L'P', B_GREEN | F_WHITE);
-				}
-
-				if (elevation::instance().Elevated())
-				{
-					auto& Where = Buf.back().back();
-					ElevationChar = Where;
-					ElevationCharUsed = true;
-
-					SetMacroChar(Where, L'A', B_LIGHTRED | F_WHITE);
-				}
+				Global->CtrlObject->Macro.IsRecording() ?
+					SetMacroChar(Where, L'R', B_LIGHTRED | F_WHITE) :
+					SetMacroChar(Where, L'P', B_GREEN | F_WHITE);
 			}
 
-			if (!SBFlags.Check(SBFLAGS_FLUSHED))
+			if (elevation::instance().Elevated())
 			{
-				if (Global->IsPanelsActive() && Global->Opt->Clock)
+				auto& Where = Buf.back().back();
+				ElevationChar = Where;
+				ElevationCharUsed = true;
+
+				SetMacroChar(Where, L'A', B_LIGHTRED | F_WHITE);
+			}
+		}
+
+		if (!SBFlags.Check(SBFLAGS_FLUSHED))
+		{
+			if (Global->IsPanelsActive() && Global->Opt->Clock)
+			{
+				ShowTime();
+			}
+
+			std::vector<SMALL_RECT>WriteList;
+			bool Changes=false;
+
+			if (m_ClearTypeFix == BSTATE_CHECKED)
+			{
+				//Для полного избавления от артефактов ClearType будем перерисовывать на всю ширину.
+				//Чревато тормозами/миганием в зависимости от конфигурации системы.
+				SMALL_RECT WriteRegion={0, 0, static_cast<SHORT>(Buf.width() - 1), 0};
+
+				for (size_t I = 0, Height = Buf.height(); I < Height; ++I)
 				{
-					ShowTimeInBackground();
-				}
+					auto BufRow = Buf[I], ShadowRow = Shadow[I];
 
-				std::vector<SMALL_RECT>WriteList;
-				bool Changes=false;
+					WriteRegion.Top = static_cast<SHORT>(I);
+					WriteRegion.Bottom = static_cast<SHORT>(I - 1);
 
-				if (Global->Opt->ClearType)
-				{
-					//Для полного избавления от артефактов ClearType будем перерисовывать на всю ширину.
-					//Чревато тормозами/миганием в зависимости от конфигурации системы.
-					SMALL_RECT WriteRegion={0, 0, static_cast<SHORT>(Buf.width() - 1), 0};
-
-					for (size_t I = 0, Height = Buf.height(); I < Height; ++I)
+					while (I < Height && BufRow != ShadowRow)
 					{
-						auto BufRow = Buf[I], ShadowRow = Shadow[I];
+						I++;
+						BufRow = Buf[I];
+						ShadowRow = Shadow[I];
+						WriteRegion.Bottom++;
+					}
 
-						WriteRegion.Top = static_cast<short>(I);
-						WriteRegion.Bottom = static_cast<short>(I - 1);
-
-						while (I < Height && BufRow != ShadowRow)
-						{
-							I++;
-							BufRow = Buf[I];
-							ShadowRow = Shadow[I];
-							WriteRegion.Bottom++;
-						}
-
-						if (WriteRegion.Bottom >= WriteRegion.Top)
-						{
-							WriteList.emplace_back(WriteRegion);
-							Changes=true;
-						}
+					if (WriteRegion.Bottom >= WriteRegion.Top)
+					{
+						WriteList.emplace_back(WriteRegion);
+						Changes=true;
 					}
 				}
-				else
-				{
-					bool Started=false;
-					SMALL_RECT WriteRegion = { static_cast<SHORT>(Buf.width() - 1), static_cast<SHORT>(Buf.height() - 1), 0, 0 };
+			}
+			else
+			{
+				bool Started=false;
+				SMALL_RECT WriteRegion = { static_cast<SHORT>(Buf.width() - 1), static_cast<SHORT>(Buf.height() - 1), 0, 0 };
 
-					auto PtrBuf = Buf.data(), PtrShadow = Shadow.data();
-					for (size_t I = 0, Height = Buf.height(); I < Height; ++I)
+				auto PtrBuf = Buf.data(), PtrShadow = Shadow.data();
+				for (size_t I = 0, Height = Buf.height(); I < Height; ++I)
+				{
+					for (size_t J = 0, Width = Buf.width(); J < Width; ++J, ++PtrBuf, ++PtrShadow)
 					{
-						for (size_t J = 0, Width = Buf.width(); J < Width; ++J, ++PtrBuf, ++PtrShadow)
+						if (*PtrBuf != *PtrShadow)
 						{
-							if (*PtrBuf != *PtrShadow)
-							{
-								WriteRegion.Left = std::min(WriteRegion.Left, static_cast<SHORT>(J));
-								WriteRegion.Top = std::min(WriteRegion.Top, static_cast<SHORT>(I));
-								WriteRegion.Right = std::max(WriteRegion.Right, static_cast<SHORT>(J));
-								WriteRegion.Bottom = std::max(WriteRegion.Bottom, static_cast<SHORT>(I));
-								Changes=true;
-								Started=true;
-							}
-							else if (Started && static_cast<SHORT>(I) > WriteRegion.Bottom && static_cast<SHORT>(J) >= WriteRegion.Left)
+							WriteRegion.Left = std::min(WriteRegion.Left, static_cast<SHORT>(J));
+							WriteRegion.Top = std::min(WriteRegion.Top, static_cast<SHORT>(I));
+							WriteRegion.Right = std::max(WriteRegion.Right, static_cast<SHORT>(J));
+							WriteRegion.Bottom = std::max(WriteRegion.Bottom, static_cast<SHORT>(I));
+							Changes=true;
+							Started=true;
+						}
+						else if (Started && static_cast<SHORT>(I) > WriteRegion.Bottom && static_cast<SHORT>(J) >= WriteRegion.Left)
+						{
+							if (m_ClearTypeFix == BSTATE_3STATE)
 							{
 								//BUGBUG: при включенном СlearType-сглаживании на экране остаётся "мусор" - тонкие вертикальные полосы
 								// кстати, и при выключенном тоже (но реже).
@@ -426,102 +389,98 @@ void ScreenBuf::Flush(flush_type FlushType)
 								// расширяем область прорисовки влево-вправо на 1 символ:
 								WriteRegion.Left=std::max(static_cast<SHORT>(0),static_cast<SHORT>(WriteRegion.Left-1));
 								WriteRegion.Right = std::min(static_cast<SHORT>(WriteRegion.Right + 1), static_cast<SHORT>(Buf.width() - 1));
-								bool Merge=false;
-								if (!WriteList.empty())
-								{
-									SMALL_RECT& Last=WriteList.back();
-									const int MAX_DELTA = 5;
-									if (WriteRegion.Top-1==Last.Bottom && ((WriteRegion.Left>=Last.Left && WriteRegion.Left-Last.Left<MAX_DELTA) || (Last.Right>=WriteRegion.Right && Last.Right-WriteRegion.Right<MAX_DELTA)))
-									{
-										Last.Bottom=WriteRegion.Bottom;
-										Last.Left=std::min(Last.Left,WriteRegion.Left);
-										Last.Right=std::max(Last.Right,WriteRegion.Right);
-										Merge=true;
-									}
-								}
-
-								if (!Merge)
-									WriteList.emplace_back(WriteRegion);
-
-								WriteRegion.Left = static_cast<SHORT>(Buf.width() - 1);
-								WriteRegion.Top = static_cast<SHORT>(Buf.height() - 1);
-								WriteRegion.Right=0;
-								WriteRegion.Bottom=0;
-								Started=false;
 							}
+
+							bool Merge=false;
+							if (!WriteList.empty())
+							{
+								SMALL_RECT& Last=WriteList.back();
+								const int MAX_DELTA = 5;
+								if (WriteRegion.Top-1==Last.Bottom && ((WriteRegion.Left>=Last.Left && WriteRegion.Left-Last.Left<MAX_DELTA) || (Last.Right>=WriteRegion.Right && Last.Right-WriteRegion.Right<MAX_DELTA)))
+								{
+									Last.Bottom=WriteRegion.Bottom;
+									Last.Left=std::min(Last.Left,WriteRegion.Left);
+									Last.Right=std::max(Last.Right,WriteRegion.Right);
+									Merge=true;
+								}
+							}
+
+							if (!Merge)
+								WriteList.emplace_back(WriteRegion);
+
+							WriteRegion.Left = static_cast<SHORT>(Buf.width() - 1);
+							WriteRegion.Top = static_cast<SHORT>(Buf.height() - 1);
+							WriteRegion.Right=0;
+							WriteRegion.Bottom=0;
+							Started=false;
 						}
 					}
-
-					if (Started)
-					{
-						WriteList.emplace_back(WriteRegion);
-					}
 				}
 
-				if (Changes)
+				if (Started)
 				{
-					if (IsConsoleSizeChanged())
-					{
-						// We must draw something, but canvas has been changed, drawing on it will make things only worse
-						Changes = false;
-						GenerateWINDOW_BUFFER_SIZE_EVENT();
-					}
+					WriteList.emplace_back(WriteRegion);
 				}
-
-				if (Changes)
-				{
-					std::for_each(CONST_RANGE(WriteList, i)
-					{
-						COORD BufferCoord = { i.Left, i.Top };
-						SMALL_RECT WriteRegion = i;
-						Console().WriteOutput(Buf, BufferCoord, WriteRegion);
-					});
-					Console().Commit();
-					Shadow = Buf;
-				}
-
-				if (MacroCharUsed)
-				{
-					Buf[0][0] = MacroChar;
-				}
-
-				if (ElevationCharUsed)
-				{
-					Buf.back().back() = ElevationChar;
-				}
-
-				SBFlags.Set(SBFLAGS_FLUSHED);
 			}
-		}
 
-		if (FlushType & flush_type::cursor && !SBFlags.Check(SBFLAGS_FLUSHEDCURPOS))
-		{
-			if (is_visible(CurX, CurY, CurX, CurY))
+			if (Changes)
 			{
-				COORD C={CurX,CurY};
-				Console().SetCursorPosition(C);
+				if (IsConsoleSizeChanged())
+				{
+					// We must draw something, but canvas has been changed, drawing on it will make things only worse
+					Changes = false;
+					GenerateWINDOW_BUFFER_SIZE_EVENT();
+				}
 			}
+
+			if (Changes)
+			{
+				for (const auto& i: WriteList)
+				{
+					console.WriteOutput(Buf, { i.Left, i.Top }, i);
+				}
+
+				console.Commit();
+				Shadow = Buf;
+			}
+
+			if (MacroCharUsed)
+			{
+				Buf[0][0] = MacroChar;
+			}
+
+			if (ElevationCharUsed)
+			{
+				Buf.back().back() = ElevationChar;
+			}
+
+			SBFlags.Set(SBFLAGS_FLUSHED);
+		}
+	}
+
+	if (FlushType & flush_type::cursor)
+	{
+		// Example: a dialog with and edit control, dragged beyond the screen
+		const auto IsCursorInBufffer = is_visible({ m_CurPos.x, m_CurPos.y, m_CurPos.x, m_CurPos.x });
+
+		// Skip setting cursor position if it's not in the viewport to prevent Windows from repositioning the console window
+		if (!SBFlags.Check(SBFLAGS_FLUSHEDCURPOS) && IsCursorInBufffer && console.IsPositionVisible(m_CurPos))
+		{
+			console.SetCursorPosition({ static_cast<SHORT>(m_CurPos.x), static_cast<SHORT>(m_CurPos.y) });
 			SBFlags.Set(SBFLAGS_FLUSHEDCURPOS);
 		}
 
-		if (FlushType & flush_type::cursor && !SBFlags.Check(SBFLAGS_FLUSHEDCURTYPE))
+		if (!SBFlags.Check(SBFLAGS_FLUSHEDCURTYPE))
 		{
-			CONSOLE_CURSOR_INFO cci = { CurSize, CurVisible && is_visible(CurX, CurY, CurX, CurY) };
-			Console().SetCursorInfo(cci);
+			console.SetCursorInfo({ CurSize, CurVisible && IsCursorInBufffer });
 			SBFlags.Set(SBFLAGS_FLUSHEDCURTYPE);
-		}
-
-		if (FlushType & flush_type::title && !SBFlags.Check(SBFLAGS_FLUSHEDTITLE))
-		{
-			Console().SetTitle(m_Title);
-			SBFlags.Set(SBFLAGS_FLUSHEDTITLE);
 		}
 	}
 }
 
 void ScreenBuf::Lock()
 {
-	LockCount++;
+	++LockCount;
 }
 
 void ScreenBuf::Unlock()
@@ -535,30 +494,26 @@ void ScreenBuf::SetLockCount(int Count)
 	LockCount=Count;
 }
 
-void ScreenBuf::MoveCursor(int X,int Y)
+void ScreenBuf::MoveCursor(point const Point)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
-	if (!is_visible(CurX, CurY, CurX, CurY))
+	if (!is_visible({ m_CurPos.x, m_CurPos.y, m_CurPos.x, m_CurPos.x }))
 	{
 		CurVisible = false;
 	}
 
-	if(X!=CurX || Y!=CurY || !CurVisible)
+	if(Point != m_CurPos || !CurVisible)
 	{
-		CurX=X;
-		CurY=Y;
+		m_CurPos = Point;
 		SBFlags.Clear(SBFLAGS_FLUSHEDCURPOS);
 	}
 }
 
-
-void ScreenBuf::GetCursorPos(SHORT& X, SHORT& Y) const
+point ScreenBuf::GetCursorPos() const
 {
-	X=CurX;
-	Y=CurY;
+	return m_CurPos;
 }
-
 
 void ScreenBuf::SetCursorType(bool Visible, DWORD Size)
 {
@@ -581,7 +536,7 @@ void ScreenBuf::GetCursorType(bool& Visible, DWORD& Size) const
 	Size=CurSize;
 }
 
-void ScreenBuf::SetTitle(const string& Title)
+void ScreenBuf::SetTitle(string_view const Title)
 {
 	if (Title != m_Title)
 	{
@@ -603,7 +558,7 @@ void ScreenBuf::RestoreElevationChar()
 {
 	if(ElevationCharUsed)
 	{
-		Write(static_cast<int>(Buf.width() - 1), static_cast<int>(Buf.height() - 1), &ElevationChar, 1);
+		Write(static_cast<int>(Buf.width() - 1), static_cast<int>(Buf.height() - 1), { &ElevationChar, 1 });
 		ElevationCharUsed=false;
 	}
 }
@@ -611,41 +566,61 @@ void ScreenBuf::RestoreElevationChar()
 //  проскроллировать буфер на одну строку вверх.
 void ScreenBuf::Scroll(size_t Count)
 {
-	SCOPED_ACTION(os::critical_section_lock)(CS);
+	SCOPED_ACTION(std::lock_guard)(CS);
 
 	const FAR_CHAR_INFO Fill{ L' ', colors::PaletteColorToFarColor(COL_COMMANDLINEUSERSCREEN) };
 
 	if (Global->Opt->WindowMode)
 	{
-		SMALL_RECT Region = { 0, 0, ScrX, static_cast<SHORT>(Count - 1) };
+		if (console.IsScrollbackPresent())
+		{
+			SMALL_RECT Region = { 0, 0, ScrX, static_cast<SHORT>(Count - 1) };
 
-		// TODO: matrix_view to avoid copying
-		matrix<FAR_CHAR_INFO> BufferBlock(Count, ScrX + 1);
-		Read(Region.Left, Region.Top, Region.Right, Region.Bottom, BufferBlock);
+			// TODO: matrix_view to avoid copying
+			matrix<FAR_CHAR_INFO> BufferBlock(Count, ScrX + 1);
+			Read({ Region.Left, Region.Top, Region.Right, Region.Bottom }, BufferBlock);
 
-		Console().ScrollNonClientArea(Count, Fill);
+			console.ScrollNonClientArea(Count, Fill);
 
-		Region.Top = static_cast<SHORT>(-static_cast<SHORT>(Count));
-		Region.Bottom = -1;
-		Console().WriteOutput(BufferBlock, Region);
+			Region.Top = static_cast<SHORT>(-static_cast<SHORT>(Count));
+			Region.Bottom = -1;
+			console.WriteOutput(BufferBlock, Region);
+		}
+		else
+		{
+			// Even if there's no scrollback there might be the right area
+			console.ScrollNonClientArea(Count, Fill);
+		}
 	}
 
 	if (Count && Count < Buf.height())
 	{
 		auto& RawBuf = Buf.vector();
-		size_t size = RawBuf.size();
+		const auto size = RawBuf.size();
 		RawBuf.erase(RawBuf.begin(), RawBuf.begin() + Count * Buf.width());
 		RawBuf.resize(size, Fill);
 
 		SBFlags.Clear(SBFLAGS_FLUSHED);
 	}
 
+	debug_flush();
+}
+
+void ScreenBuf::SetClearTypeFix(int const ClearTypeFix)
+{
+	// 'New' console doesn't need this
+	if (::console.IsVtSupported())
+		return;
+
+	m_ClearTypeFix = ClearTypeFix;
+}
+
+void ScreenBuf::debug_flush()
+{
 #ifdef DIRECT_SCREEN_OUT
 	Flush();
 #elif defined(DIRECT_RT)
-
 	if (Global->DirectRT)
 		Flush();
-
 #endif
 }

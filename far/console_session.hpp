@@ -34,16 +34,29 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+class SaveScreen;
+
 class i_context
 {
 public:
+	virtual ~i_context() = default;
+
 	virtual void Activate() = 0;
 	virtual void Deactivate() = 0;
-	virtual void DrawCommand(const string& Command) = 0;
+	virtual void DrawCommand(string_view Command) = 0;
 	virtual void DoPrologue() = 0;
 	virtual void DoEpilogue(bool Scroll) = 0;
 	virtual void Consolise(bool SetTextColour = true) = 0;
-	virtual ~i_context() = default;
 };
 
 class console_session

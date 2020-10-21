@@ -33,6 +33,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 namespace os::env
 {
 	namespace provider
@@ -42,6 +53,7 @@ namespace os::env
 			class provider: noncopyable
 			{
 			public:
+				[[nodiscard]]
 				const wchar_t* data() const;
 
 			protected:
@@ -66,11 +78,19 @@ namespace os::env
 		};
 	}
 
-	bool get(const string_view& Name, string& Value);
-	string get(const string_view& Name);
-	bool set(const string_view& Name, const string_view& Value);
-	bool del(const string_view& Name);
-	string expand(const string_view& Str);
+	bool get(string_view Name, string& Value);
+
+	[[nodiscard]]
+	string get(string_view Name);
+
+	bool set(string_view Name, string_view Value);
+
+	bool del(string_view Name);
+
+	[[nodiscard]]
+	string expand(string_view Str);
+
+	[[nodiscard]]
 	string get_pathext();
 }
 

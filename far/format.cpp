@@ -30,17 +30,30 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
+// Self:
+#include "format.hpp"
 
+// Internal:
 #include "components.hpp"
+#include "locale.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 WARNING_PUSH(3)
 
-WARNING_DISABLE_GCC("-Wformat-nonliteral")
+WARNING_DISABLE_GCC("-Wmissing-declarations")
+
+WARNING_DISABLE_CLANG("-Weverything")
+
+#define FMT_STATIC_THOUSANDS_SEPARATOR ::locale.thousand_separator()
 
 #include "thirdparty/fmt/format.cc"
-#include "thirdparty/fmt/ostream.cc"
 
 WARNING_POP()
 
@@ -48,6 +61,6 @@ namespace
 {
 	SCOPED_ACTION(components::component)([]
 	{
-		return components::component::info{ L"fmt"s, format(L"{0}.{1}.{2}", FMT_VERSION / 10000, FMT_VERSION % 10000 / 100, FMT_VERSION % 100) };
+		return components::info{ L"fmt"sv, format(FSTR(L"{0}.{1}.{2}"), FMT_VERSION / 10000, FMT_VERSION % 10000 / 100, FMT_VERSION % 100) };
 	});
 }

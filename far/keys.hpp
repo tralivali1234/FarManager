@@ -39,12 +39,22 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
 #define EXTENDED_KEY_BASE     0x00010000
 #define INTERNAL_KEY_BASE     0x00020000
 #define INTERNAL_KEY_BASE_2   0x00030000
 #define INTERNAL_MACRO_BASE   0x00080000
 
-enum far_key_code
+enum far_key_code: unsigned int
 {
 	NO_KEY = 0,
 
@@ -1283,19 +1293,5 @@ enum far_key_code
 	KEY_ALTSHIFT_BASE        =KEY_ALTSHIFT,
 	KEY_RALTSHIFT_BASE       =KEY_RALT|KEY_SHIFT,
 };
-
-inline bool IsInternalKeyReal(unsigned int Key)
-{
-	return Key==KEY_NUMDEL|| Key==KEY_NUMENTER||
-		Key==KEY_MSWHEEL_UP || Key==KEY_MSWHEEL_DOWN||
-		Key==KEY_MSWHEEL_LEFT || Key==KEY_MSWHEEL_RIGHT||
-		Key==KEY_MSLCLICK || Key==KEY_MSRCLICK ||
-		Key==KEY_MSM1CLICK || Key==KEY_MSM2CLICK || Key==KEY_MSM3CLICK;
-}
-
-inline bool IsCharKey(unsigned int Key)
-{
-	return Key < 0x1000 || (Key >= KEY_MULTIPLY && Key <= KEY_DIVIDE);
-}
 
 #endif // KEYS_HPP_C9983354_D8EA_4A70_9E16_722A332B503D

@@ -35,7 +35,16 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "modal.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 class TreeList;
 class EditControl;
@@ -50,32 +59,31 @@ public:
 
 	FolderTree(private_tag, int ModalMode, int IsStandalone, bool IsFullScreen);
 
-	virtual bool ProcessKey(const Manager::Key& Key) override;
-	virtual bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
-	virtual void InitKeyBar() override;
-	virtual void SetScreenPosition() override;
-	virtual void ResizeConsole() override;
-	/* $ Введена для нужд CtrlAltShift OT */
-	virtual bool CanFastHide() const override;
-	virtual int GetTypeAndName(string &strType, string &strName) override;
-	virtual int GetType() const override { return windowtype_findfolder; }
-	virtual bool IsKeyBarVisible() const override { return true; }
+	bool ProcessKey(const Manager::Key& Key) override;
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	void InitKeyBar() override;
+	void SetScreenPosition() override;
+	void ResizeConsole() override;
+	bool CanFastHide() const override;
+	int GetTypeAndName(string &strType, string &strName) override;
+	int GetType() const override { return windowtype_findfolder; }
+	bool IsKeyBarVisible() const override { return true; }
 
 private:
-	virtual string GetTitle() const override { return {}; }
-	virtual void DisplayObject() override;
+	string GetTitle() const override { return {}; }
+	void DisplayObject() override;
 
 	void init(string &strResultFolder);
 	void DrawEdit() const;
 	void SetCoords();
 
-	std::shared_ptr<TreeList> Tree;
-	std::unique_ptr<EditControl> FindEdit;
-	int ModalMode;
-	bool IsFullScreen;
-	int IsStandalone;
-	string strNewFolder;
-	string strLastName;
+	std::shared_ptr<TreeList> m_Tree;
+	std::unique_ptr<EditControl> m_FindEdit;
+	int m_ModalMode;
+	bool m_IsFullScreen;
+	int m_IsStandalone;
+	string m_NewFolder;
+	string m_LastName;
 };
 
 #endif // FOLDTREE_HPP_B257EC6E_953F_44BB_9F98_D55AEB1D584A

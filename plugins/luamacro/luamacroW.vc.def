@@ -12,3 +12,22 @@ EXPORTS
     ProcessSynchroEventW
     ProcessViewerEventW
     SetStartupInfoW
+    AnalyseW
+    CloseAnalyseW
+    ClosePanelW
+    CompareW
+    DeleteFilesW
+    GetFilesW
+    GetFindDataW
+    FreeFindDataW
+    GetOpenPanelInfoW
+    MakeDirectoryW
+    ProcessHostFileW
+    ProcessPanelEventW
+    ProcessPanelInputW
+    PutFilesW
+    SetDirectoryW
+    SetFindListW
+    GetContentFieldsW
+    GetContentDataW
+    FreeContentDataW

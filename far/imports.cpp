@@ -31,87 +31,21 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "imports.hpp"
 
-imports::imports():
-#define INIT_MODULE(module) m_ ## module(L## #module)
+// Internal:
 
-	INIT_MODULE(ntdll),
-	INIT_MODULE(kernel32),
-	INIT_MODULE(shell32),
-	INIT_MODULE(user32),
-	INIT_MODULE(virtdisk),
-	INIT_MODULE(rstrtmgr),
-	INIT_MODULE(netapi32),
-	INIT_MODULE(dbghelp),
+// Platform:
 
-#undef INIT_MODULE
+// Common:
 
-// just to make it more readable
-#define INIT_IMPORT(module, pointer) pointer(module)
+// External:
 
-	INIT_IMPORT(m_ntdll, NtQueryDirectoryFile),
-	INIT_IMPORT(m_ntdll, NtQueryInformationFile),
-	INIT_IMPORT(m_ntdll, NtSetInformationFile),
-	INIT_IMPORT(m_ntdll, NtQueryObject),
-	INIT_IMPORT(m_ntdll, NtOpenSymbolicLinkObject),
-	INIT_IMPORT(m_ntdll, NtQuerySymbolicLinkObject),
-	INIT_IMPORT(m_ntdll, NtClose),
-	INIT_IMPORT(m_ntdll, RtlGetLastNtStatus),
-	INIT_IMPORT(m_ntdll, RtlNtStatusToDosError),
+//----------------------------------------------------------------------------
 
-	INIT_IMPORT(m_kernel32, GetConsoleKeyboardLayoutNameW),
-	INIT_IMPORT(m_kernel32, CreateSymbolicLinkW),
-	INIT_IMPORT(m_kernel32, FindFirstFileNameW),
-	INIT_IMPORT(m_kernel32, FindNextFileNameW),
-	INIT_IMPORT(m_kernel32, FindFirstStreamW),
-	INIT_IMPORT(m_kernel32, FindNextStreamW),
-	INIT_IMPORT(m_kernel32, GetFinalPathNameByHandleW),
-	INIT_IMPORT(m_kernel32, GetVolumePathNamesForVolumeNameW),
-	INIT_IMPORT(m_kernel32, GetPhysicallyInstalledSystemMemory),
-	INIT_IMPORT(m_kernel32, HeapSetInformation),
-	INIT_IMPORT(m_kernel32, IsWow64Process),
-	INIT_IMPORT(m_kernel32, GetNamedPipeServerProcessId),
-	INIT_IMPORT(m_kernel32, CancelSynchronousIo),
-	INIT_IMPORT(m_kernel32, SetConsoleKeyShortcuts),
-	INIT_IMPORT(m_kernel32, GetConsoleScreenBufferInfoEx),
-	INIT_IMPORT(m_kernel32, QueryFullProcessImageNameW),
-	INIT_IMPORT(m_kernel32, TzSpecificLocalTimeToSystemTime),
-	INIT_IMPORT(m_kernel32, AddVectoredExceptionHandler),
-	INIT_IMPORT(m_kernel32, RemoveVectoredExceptionHandler),
-
-	INIT_IMPORT(m_shell32, SHCreateAssociationRegistration),
-
-	INIT_IMPORT(m_user32, RegisterPowerSettingNotification),
-	INIT_IMPORT(m_user32, UnregisterPowerSettingNotification),
-
-	INIT_IMPORT(m_virtdisk, GetStorageDependencyInformation),
-	INIT_IMPORT(m_virtdisk, OpenVirtualDisk),
-	INIT_IMPORT(m_virtdisk, DetachVirtualDisk),
-
-	INIT_IMPORT(m_rstrtmgr, RmStartSession),
-	INIT_IMPORT(m_rstrtmgr, RmEndSession),
-	INIT_IMPORT(m_rstrtmgr, RmRegisterResources),
-	INIT_IMPORT(m_rstrtmgr, RmGetList),
-
-	INIT_IMPORT(m_netapi32, NetDfsGetInfo),
-
-	INIT_IMPORT(m_dbghelp, MiniDumpWriteDump),
-	INIT_IMPORT(m_dbghelp, StackWalk64),
-	INIT_IMPORT(m_dbghelp, SymInitialize),
-	INIT_IMPORT(m_dbghelp, SymCleanup),
-	INIT_IMPORT(m_dbghelp, SymFromAddr),
-	INIT_IMPORT(m_dbghelp, SymSetOptions),
-	INIT_IMPORT(m_dbghelp, SymGetLineFromAddr64),
-	INIT_IMPORT(m_dbghelp, UnDecorateSymbolName)
-
-#undef INIT_IMPORT
+namespace imports_detail
 {
-}
-
 // ntdll
 NTSTATUS NTAPI imports::stub_NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, PVOID ApcRoutine, PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length, FILE_INFORMATION_CLASS FileInformationClass, BOOLEAN ReturnSingleEntry, PUNICODE_STRING FileName, BOOLEAN RestartScan)
 {
@@ -165,6 +99,39 @@ NTSTATUS NTAPI imports::stub_RtlNtStatusToDosError(NTSTATUS Status)
 {
 	// TODO: log
 	return STATUS_NOT_IMPLEMENTED;
+}
+
+NTSTATUS NTAPI imports::stub_RtlGetVersion(PRTL_OSVERSIONINFOW VersionInformation)
+{
+	// TODO: log
+	return STATUS_NOT_IMPLEMENTED;
+}
+
+BOOLEAN NTAPI imports::stub_RtlAcquireResourceExclusive(PRTL_RESOURCE Res, BOOLEAN WaitForAccess)
+{
+	// TODO: log
+	return FALSE;
+}
+
+BOOLEAN NTAPI imports::stub_RtlAcquireResourceShared(PRTL_RESOURCE Res, BOOLEAN WaitForAccess)
+{
+	// TODO: log
+	return FALSE;
+}
+
+void NTAPI imports::stub_RtlInitializeResource(PRTL_RESOURCE Res)
+{
+	// TODO: log
+}
+
+void NTAPI imports::stub_RtlReleaseResource(PRTL_RESOURCE Res)
+{
+	// TODO: log
+}
+
+void NTAPI imports::stub_RtlDeleteResource(PRTL_RESOURCE Res)
+{
+	// TODO: log
 }
 
 // kernel32
@@ -287,14 +254,57 @@ BOOL WINAPI imports::stub_TzSpecificLocalTimeToSystemTime(const TIME_ZONE_INFORM
 	return FALSE;
 }
 
-PVOID WINAPI imports::stub_AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler)
+void WINAPI imports::stub_InitializeSRWLock(PSRWLOCK SRWLock)
 {
 	// TODO: log
 	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-	return nullptr;
 }
 
-ULONG WINAPI imports::stub_RemoveVectoredExceptionHandler(PVOID Handler)
+void WINAPI imports::stub_AcquireSRWLockExclusive(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+}
+
+void WINAPI imports::stub_AcquireSRWLockShared(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+}
+
+void WINAPI imports::stub_ReleaseSRWLockExclusive(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+}
+
+void WINAPI imports::stub_ReleaseSRWLockShared(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+}
+
+BOOLEAN WINAPI imports::stub_TryAcquireSRWLockExclusive(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
+BOOLEAN WINAPI imports::stub_TryAcquireSRWLockShared(PSRWLOCK SRWLock)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
+void WINAPI imports::stub_GetSystemTimePreciseAsFileTime(LPFILETIME SystemTimeAsFileTime)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+}
+
+int WINAPI imports::stub_CompareStringOrdinal(LPCWCH String1, int Count1, LPCWCH String2, int Count2, BOOL IgnoreCase)
 {
 	// TODO: log
 	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
@@ -368,7 +378,14 @@ DWORD WINAPI imports::stub_RmGetList(DWORD dwSessionHandle, UINT *pnProcInfoNeed
 }
 
 // netapi32
-NET_API_STATUS NET_API_FUNCTION imports::stub_NetDfsGetInfo(LPWSTR path, LPWSTR reserved1, LPWSTR reserved2, DWORD level, LPBYTE *buff)
+NET_API_STATUS NET_API_FUNCTION imports::stub_NetDfsGetInfo(LPWSTR DfsEntryPath, LPWSTR ServerName, LPWSTR ShareName, DWORD Level, LPBYTE* Buffer)
+{
+	// TODO: log
+	return NERR_InvalidAPI;
+}
+
+// netapi32
+NET_API_STATUS NET_API_FUNCTION imports::stub_NetDfsGetClientInfo(LPWSTR DfsEntryPath, LPWSTR ServerName, LPWSTR ShareName, DWORD Level, LPBYTE* Buffer)
 {
 	// TODO: log
 	return NERR_InvalidAPI;
@@ -396,6 +413,13 @@ BOOL WINAPI imports::stub_SymInitialize(HANDLE Process, PCSTR UserSearchPath, BO
 	return FALSE;
 }
 
+BOOL WINAPI imports::stub_SymInitializeW(HANDLE Process, LPCWSTR UserSearchPath, BOOL InvadeProcess)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
 BOOL WINAPI imports::stub_SymCleanup(HANDLE Process)
 {
 	// TODO: log
@@ -404,6 +428,13 @@ BOOL WINAPI imports::stub_SymCleanup(HANDLE Process)
 }
 
 BOOL WINAPI imports::stub_SymFromAddr(HANDLE Process, DWORD64 Address, PDWORD64 Displacement, PSYMBOL_INFO Symbol)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
+BOOL WINAPI imports::stub_SymFromAddrW(HANDLE Process, DWORD64 Address, PDWORD64 Displacement, PSYMBOL_INFOW Symbol)
 {
 	// TODO: log
 	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
@@ -424,9 +455,41 @@ BOOL WINAPI imports::stub_SymGetLineFromAddr64(HANDLE Process, DWORD64 Addr, PDW
 	return FALSE;
 }
 
-DWORD WINAPI imports::stub_UnDecorateSymbolName(PCSTR Name, PSTR OutputString, DWORD MaxStringLength, DWORD Flags)
+BOOL WINAPI imports::stub_SymGetLineFromAddrW64(HANDLE Process, DWORD64 Addr, PDWORD Displacement, PIMAGEHLP_LINEW64 Line)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
+BOOL WINAPI imports::stub_SymGetModuleInfoW64(HANDLE Process, DWORD64 Addr, PIMAGEHLP_MODULEW64 ModuleInfo)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return FALSE;
+}
+
+PVOID WINAPI imports::stub_SymFunctionTableAccess64(HANDLE Process, DWORD64 AddrBase)
+{
+	// TODO: log
+	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+	return nullptr;
+}
+
+DWORD64 WINAPI imports::stub_SymGetModuleBase64(HANDLE Process, DWORD64 Address)
 {
 	// TODO: log
 	SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
 	return 0;
 }
+
+// dwmapi
+HRESULT WINAPI imports::stub_DwmGetWindowAttribute(HWND Hwnd, DWORD dwAttribute, PVOID pvAttribute, DWORD cbAttribute)
+{
+	// TODO: log
+	return ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+}
+
+NIFTY_DEFINE(imports_detail::imports, imports);

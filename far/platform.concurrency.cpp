@@ -30,13 +30,34 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "platform.concurrency.hpp"
+
+// Internal:
+#include "exception.hpp"
+#include "imports.hpp"
+#include "pathmix.hpp"
+
+// Platform:
+
+// Common:
+#include "common.hpp"
+#include "common/string_utils.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 namespace os::concurrency
 {
+	string detail::make_name(string_view const Namespace, string_view const HashPart, string_view const TextPart)
+	{
+		auto Str = concat(Namespace, str(hash_range(ALL_CONST_RANGE(HashPart))), L'_', TextPart);
+		ReplaceBackslashToSlash(Str);
+		return Str;
+	}
+
 	critical_section::critical_section()
 	{
 		InitializeCriticalSection(&m_Object);
@@ -60,9 +81,21 @@ namespace os::concurrency
 
 	thread::~thread()
 	{
-		if (joinable())
+		if (!joinable())
+			return;
+
+		switch (m_Mode)
 		{
-			std::invoke(m_Mode, this);
+		case mode::join:
+			join();
+			return;
+
+		case mode::detach:
+			detach();
+			return;
+
+		default:
+			UNREACHABLE;
 		}
 	}
 
@@ -94,51 +127,141 @@ namespace os::concurrency
 	void thread::check_joinable() const
 	{
 		if (!joinable())
-			throw MAKE_FAR_EXCEPTION(L"Thread is not joinable");
+			throw MAKE_FAR_FATAL_EXCEPTION(L"Thread is not joinable"sv);
+	}
+
+	void thread::starter_impl(proc_type Proc, void* Param)
+	{
+		reset(reinterpret_cast<HANDLE>(_beginthreadex(nullptr, 0, Proc, Param, 0, &m_ThreadId)));
+
+		if (!*this)
+			throw MAKE_FAR_FATAL_EXCEPTION(L"Can't create thread"sv);
 	}
 
 
-	mutex::mutex(const wchar_t* Name):
-		handle(CreateMutex(nullptr, false, EmptyToNull(Name)))
+	mutex::mutex(string_view const Name):
+		handle(CreateMutex(nullptr, false, EmptyToNull(null_terminated(Name))))
 	{
 	}
 
-	const wchar_t* mutex::get_namespace()
+	string_view mutex::get_namespace()
 	{
-		return L"Far_Manager_Mutex_";
+		return L"Far_Manager_Mutex_"sv;
 	}
 
-	bool mutex::lock() const
+	void mutex::lock() const
 	{
-		return wait();
+		wait();
 	}
 
-	bool mutex::unlock() const
+	void mutex::unlock() const
 	{
-		return ReleaseMutex(native_handle()) != FALSE;
+		if (!ReleaseMutex(native_handle()))
+			throw MAKE_FAR_FATAL_EXCEPTION(L"ReleaseMutex failed"sv);
 	}
 
 
-	event::event(type Type, state InitialState, const wchar_t* Name):
-		handle(CreateEvent(nullptr, Type == type::manual, InitialState == state::signaled, EmptyToNull(Name)))
+	namespace detail
+	{
+		class i_shared_mutex
+		{
+		public:
+			virtual ~i_shared_mutex() = default;
+			virtual void lock() = 0;
+			[[nodiscard]]
+			virtual bool try_lock() = 0;
+			virtual void unlock() = 0;
+			virtual void lock_shared() = 0;
+			[[nodiscard]]
+			virtual bool try_lock_shared() = 0;
+			virtual void unlock_shared() = 0;
+		};
+
+		class shared_mutex_legacy final: public i_shared_mutex
+		{
+		public:
+			NONCOPYABLE(shared_mutex_legacy);
+
+			shared_mutex_legacy() { imports.RtlInitializeResource(&m_Lock); m_Lock.Flags |= RTL_RESOURCE_FLAG_LONG_TERM; }
+			~shared_mutex_legacy() override { imports.RtlDeleteResource(&m_Lock); }
+
+			void lock() override { imports.RtlAcquireResourceExclusive(&m_Lock, TRUE); }
+			bool try_lock() override { return imports.RtlAcquireResourceExclusive(&m_Lock, FALSE) != FALSE; }
+			void unlock() override { imports.RtlReleaseResource(&m_Lock); }
+			void lock_shared() override { imports.RtlAcquireResourceShared(&m_Lock, TRUE); }
+			bool try_lock_shared() override { return imports.RtlAcquireResourceShared(&m_Lock, FALSE) != FALSE; }
+			void unlock_shared() override { imports.RtlReleaseResource(&m_Lock); }
+
+		private:
+			RTL_RESOURCE m_Lock{};
+		};
+
+		class shared_mutex_srw final: public i_shared_mutex
+		{
+		public:
+			NONCOPYABLE(shared_mutex_srw);
+
+			shared_mutex_srw() = default;
+
+			void lock() override { imports.AcquireSRWLockExclusive(&m_Lock); }
+			bool try_lock() override { return imports.TryAcquireSRWLockExclusive(&m_Lock) != FALSE; }
+			void unlock() override { imports.ReleaseSRWLockExclusive(&m_Lock); }
+			void lock_shared() override { imports.AcquireSRWLockShared(&m_Lock); }
+			bool try_lock_shared() override { return imports.TryAcquireSRWLockShared(&m_Lock) != FALSE; }
+			void unlock_shared() override { imports.ReleaseSRWLockShared(&m_Lock); }
+
+		private:
+			SRWLOCK m_Lock{};
+		};
+	}
+
+	static std::unique_ptr<detail::i_shared_mutex> make_shared_mutex()
+	{
+		// Windows 7 and above
+		if (imports.TryAcquireSRWLockExclusive)
+			return std::make_unique<detail::shared_mutex_srw>();
+
+		return std::make_unique<detail::shared_mutex_legacy>();
+	}
+
+
+	shared_mutex::shared_mutex():
+		m_Impl(make_shared_mutex())
 	{
 	}
 
-	const wchar_t* event::get_namespace()
+	shared_mutex::~shared_mutex() = default;
+
+	void shared_mutex::lock()            { return m_Impl->lock(); }
+	bool shared_mutex::try_lock()        { return m_Impl->try_lock(); }
+	void shared_mutex::unlock()          { return m_Impl->unlock(); }
+	void shared_mutex::lock_shared()     { return m_Impl->lock_shared(); }
+	bool shared_mutex::try_lock_shared() { return m_Impl->try_lock_shared(); }
+	void shared_mutex::unlock_shared()   { return m_Impl->unlock_shared(); }
+
+
+	event::event(type const Type, state const InitialState, string_view const Name):
+		handle(CreateEvent(nullptr, Type == type::manual, InitialState == state::signaled, EmptyToNull(null_terminated(Name))))
 	{
-		return L"Far_Manager_Event_";
 	}
 
-	bool event::set() const
+	string_view event::get_namespace()
+	{
+		return L"Far_Manager_Event_"sv;
+	}
+
+	void event::set() const
 	{
 		check_valid();
-		return SetEvent(get()) != FALSE;
+		if (!SetEvent(get()))
+			throw MAKE_FAR_FATAL_EXCEPTION(L"SetEvent failed"sv);
 	}
 
-	bool event::reset() const
+	void event::reset() const
 	{
 		check_valid();
-		return ResetEvent(get()) != FALSE;
+		if (!ResetEvent(get()))
+			throw MAKE_FAR_FATAL_EXCEPTION(L"ResetEvent failed"sv);
 	}
 
 	void event::associate(OVERLAPPED& o) const
@@ -151,42 +274,20 @@ namespace os::concurrency
 	{
 		if (!*this)
 		{
-			throw MAKE_FAR_EXCEPTION(L"Event not initialized properly");
+			throw MAKE_FAR_FATAL_EXCEPTION(L"Event is not initialized properly"sv);
 		}
 	}
-
-
-	multi_waiter::multi_waiter()
-	{
-		m_Objects.reserve(10);
-	}
-
-	void multi_waiter::add(const handle& Object)
-	{
-		assert(m_Objects.size() < MAXIMUM_WAIT_OBJECTS);
-
-		m_Objects.emplace_back(Object.native_handle());
-	}
-
-	void multi_waiter::add(HANDLE handle)
-	{
-		assert(m_Objects.size() < MAXIMUM_WAIT_OBJECTS);
-
-		m_Objects.emplace_back(handle);
-	}
-
-	DWORD multi_waiter::wait(mode Mode, std::chrono::milliseconds Timeout) const
-	{
-		return WaitForMultipleObjects(static_cast<DWORD>(m_Objects.size()), m_Objects.data(), Mode == mode::all, Timeout.count());
-	}
-
-	DWORD multi_waiter::wait(mode Mode) const
-	{
-		return WaitForMultipleObjects(static_cast<DWORD>(m_Objects.size()), m_Objects.data(), Mode == mode::all, INFINITE);
-	}
-
-	void multi_waiter::clear()
-	{
-		m_Objects.clear();
-	}
 }
+
+#ifdef ENABLE_TESTS
+
+#include "testing.hpp"
+
+TEST_CASE("platform.thread.forwarding")
+{
+	{
+		os::thread Thread(os::thread::mode::join, [Ptr = std::make_unique<int>(33)](auto&&){}, std::make_unique<int>(42));
+	}
+	SUCCEED();
+}
+#endif

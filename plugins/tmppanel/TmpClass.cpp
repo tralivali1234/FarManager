@@ -1,4 +1,4 @@
-/*
+ï»¿/*
 TMPCLASS.CPP
 
 Temporary panel plugin class implementation
@@ -20,7 +20,7 @@ Temporary panel plugin class implementation
 #include "guid.hpp"
 #include <SimpleString.hpp>
 
-TmpPanel::TmpPanel()
+TmpPanel::TmpPanel(const wchar_t* pHostFile)
 {
 	LastOwnersRead=FALSE;
 	LastLinksRead=FALSE;
@@ -29,6 +29,12 @@ TmpPanel::TmpPanel()
 	TmpItemsNumber=0;
 	PanelIndex=CurrentCommonPanel;
 	IfOptCommonPanel();
+	HostFile=nullptr;
+	if (pHostFile)
+	{
+		HostFile = (wchar_t*)malloc((lstrlen(pHostFile)+1)*sizeof(wchar_t));
+		lstrcpy(HostFile, pHostFile);
+	}
 }
 
 
@@ -36,6 +42,8 @@ TmpPanel::~TmpPanel()
 {
 	if (!StartupOptCommonPanel)
 		FreePanelItems(TmpPanelItem, TmpItemsNumber);
+	if (HostFile)
+		free(HostFile);
 }
 
 int TmpPanel::GetFindData(PluginPanelItem **pPanelItem,size_t *pItemsNumber,const OPERATION_MODES OpMode)
@@ -52,16 +60,30 @@ int TmpPanel::GetFindData(PluginPanelItem **pPanelItem,size_t *pItemsNumber,cons
 }
 
 
-void TmpPanel::GetOpenPanelInfo(struct OpenPanelInfo *Info)
+void TmpPanel::GetOpenPanelInfo(struct OpenPanelInfo *opInfo)
 {
-	Info->StructSize=sizeof(*Info);
-	Info->Flags=OPIF_ADDDOTS|OPIF_SHOWNAMESONLY;
+	opInfo->StructSize=sizeof(*opInfo);
+	opInfo->Flags=OPIF_ADDDOTS|OPIF_SHOWNAMESONLY;
 
-	if (!Opt.SafeModePanel) Info->Flags|=OPIF_REALNAMES;
+	if (!Opt.SafeModePanel) opInfo->Flags|=OPIF_REALNAMES;
 
-	Info->HostFile=NULL;
-	Info->CurDir=L"";
-	Info->Format=(wchar_t*)GetMsg(MTempPanel);
+	opInfo->HostFile=NULL;
+	if (this->HostFile)
+	{
+		FarGetPluginPanelItem fgppi = { sizeof(FarGetPluginPanelItem),0,NULL };
+		if (0 != (fgppi.Size=Info.PanelControl(PANEL_ACTIVE,FCTL_GETCURRENTPANELITEM,0,&fgppi)))
+		{
+			if (NULL != (fgppi.Item=(PluginPanelItem*)malloc(fgppi.Size)))
+			{
+				if (Info.PanelControl(PANEL_ACTIVE,FCTL_GETCURRENTPANELITEM,0,&fgppi) && !wcscmp(fgppi.Item->FileName,L".."))
+					opInfo->HostFile = this->HostFile;
+				free(fgppi.Item);
+			}
+		}
+	}
+
+	opInfo->CurDir=L"";
+	opInfo->Format=(wchar_t*)GetMsg(MTempPanel);
 	static wchar_t Title[100];
 
 	if (StartupOptCommonPanel)
@@ -69,7 +91,7 @@ void TmpPanel::GetOpenPanelInfo(struct OpenPanelInfo *Info)
 	else
 		FSF.sprintf(Title,L" %s%s ",(Opt.SafeModePanel ? L"(R) " : L""),GetMsg(MTempPanel));
 
-	Info->PanelTitle=Title;
+	opInfo->PanelTitle=Title;
 	static struct PanelMode PanelModesArray[10];
 	PanelModesArray[4].Flags=PMFLAGS_CASECONVERSION;
 	if ((StartupOpenFrom==OPEN_COMMANDLINE)?Opt.FullScreenPanel:StartupOptFullScreenPanel)
@@ -78,9 +100,9 @@ void TmpPanel::GetOpenPanelInfo(struct OpenPanelInfo *Info)
 	PanelModesArray[4].ColumnWidths=Opt.ColumnWidths;
 	PanelModesArray[4].StatusColumnTypes=Opt.StatusColumnTypes;
 	PanelModesArray[4].StatusColumnWidths=Opt.StatusColumnWidths;
-	Info->PanelModesArray=PanelModesArray;
-	Info->PanelModesNumber=ARRAYSIZE(PanelModesArray);
-	Info->StartPanelMode=L'4';
+	opInfo->PanelModesArray=PanelModesArray;
+	opInfo->PanelModesNumber=ARRAYSIZE(PanelModesArray);
+	opInfo->StartPanelMode=L'4';
 
 	static WORD FKeys[]=
 	{
@@ -110,7 +132,7 @@ void TmpPanel::GetOpenPanelInfo(struct OpenPanelInfo *Info)
 		}
 	}
 
-	Info->KeyBar=&kbt;
+	opInfo->KeyBar=&kbt;
 }
 
 
@@ -235,9 +257,10 @@ int TmpPanel::PutOneFile(const wchar_t* SrcPath, PluginPanelItem &PanelItem)
 	if (CurPanelItem->FileName==NULL)
 		return FALSE;
 
+	*(wchar_t*)CurPanelItem->FileName = L'\0';
 	CurPanelItem->AlternateFileName = NULL;
 
-	if (*SrcPath)
+	if (*SrcPath && !wcschr(PanelItem.FileName, L'\\'))
 	{
 		lstrcpy((wchar_t*)CurPanelItem->FileName, SrcPath);
 		FSF.AddEndSlash((wchar_t*)CurPanelItem->FileName);
@@ -466,9 +489,9 @@ void TmpPanel::UpdateItems(int ShowOwners,int ShowLinks)
 		int SameFolderItems=1;
 
 		/* $ 23.12.2001 DJ
-		   åñëè FullName - ýòî êàòàëîã, òî FindFirstFile (FullName+"*.*")
-		   ýòîò êàòàëîã íå íàéäåò. Ïîýòîìó äëÿ êàòàëîãîâ îïòèìèçàöèþ ñ
-		   SameFolderItems ïðîïóñêàåì.
+		   ÐµÑÐ»Ð¸ FullName - ÑÑ‚Ð¾ ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³, Ñ‚Ð¾ FindFirstFile (FullName+"*.*")
+		   ÑÑ‚Ð¾Ñ‚ ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³ Ð½Ðµ Ð½Ð°Ð¹Ð´ÐµÑ‚. ÐŸÐ¾ÑÑ‚Ð¾Ð¼Ñƒ Ð´Ð»Ñ ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³Ð¾Ð² Ð¾Ð¿Ñ‚Ð¸Ð¼Ð¸Ð·Ð°Ñ†Ð¸ÑŽ Ñ
+		   SameFolderItems Ð¿Ñ€Ð¾Ð¿ÑƒÑÐºÐ°ÐµÐ¼.
 		*/
 		if (Length>0 && Length > (int)lstrlen(lpFullName))    /* DJ $ */
 		{
@@ -486,10 +509,10 @@ void TmpPanel::UpdateItems(int ShowOwners,int ShowLinks)
 			}
 		}
 
-		// SameFolderItems - îïòèìèçàöèÿ äëÿ ñëó÷àÿ, êîãäà â ïàíåëè ëåæàò
-		// íåñêîëüêî ôàéëîâ èç îäíîãî è òîãî æå êàòàëîãà. Ïðè ýòîì
-		// FindFirstFile() äåëàåòñÿ îäèí ðàç íà êàòàëîã, à íå îòäåëüíî äëÿ
-		// êàæäîãî ôàéëà.
+		// SameFolderItems - Ð¾Ð¿Ñ‚Ð¸Ð¼Ð¸Ð·Ð°Ñ†Ð¸Ñ Ð´Ð»Ñ ÑÐ»ÑƒÑ‡Ð°Ñ, ÐºÐ¾Ð³Ð´Ð° Ð² Ð¿Ð°Ð½ÐµÐ»Ð¸ Ð»ÐµÐ¶Ð°Ñ‚
+		// Ð½ÐµÑÐºÐ¾Ð»ÑŒÐºÐ¾ Ñ„Ð°Ð¹Ð»Ð¾Ð² Ð¸Ð· Ð¾Ð´Ð½Ð¾Ð³Ð¾ Ð¸ Ñ‚Ð¾Ð³Ð¾ Ð¶Ðµ ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³Ð°. ÐŸÑ€Ð¸ ÑÑ‚Ð¾Ð¼
+		// FindFirstFile() Ð´ÐµÐ»Ð°ÐµÑ‚ÑÑ Ð¾Ð´Ð¸Ð½ Ñ€Ð°Ð· Ð½Ð° ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³, Ð° Ð½Ðµ Ð¾Ñ‚Ð´ÐµÐ»ÑŒÐ½Ð¾ Ð´Ð»Ñ
+		// ÐºÐ°Ð¶Ð´Ð¾Ð³Ð¾ Ñ„Ð°Ð¹Ð»Ð°.
 		if (SameFolderItems>2)
 		{
 			WIN32_FIND_DATA FindData;

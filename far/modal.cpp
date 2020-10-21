@@ -32,11 +32,20 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "modal.hpp"
+
+// Internal:
 #include "help.hpp"
+#include "global.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 void SimpleModal::Process()
 {
@@ -49,13 +58,12 @@ bool SimpleModal::Done() const
 	return m_EndLoop;
 }
 
-
 void SimpleModal::ClearDone()
 {
 	m_EndLoop=false;
 }
 
-void SimpleModal::SetDone(void)
+void SimpleModal::SetDone()
 {
 	m_EndLoop=true;
 }
@@ -68,19 +76,19 @@ void SimpleModal::SetExitCode(int Code)
 
 void SimpleModal::Close(int Code)
 {
+	OnClose();
 	SetExitCode(Code);
 	Hide();
 	Global->WindowManager->DeleteWindow(shared_from_this());
 }
 
-void SimpleModal::SetHelp(const wchar_t *Topic)
+void SimpleModal::SetHelp(string_view const Topic)
 {
 	m_HelpTopic = Topic;
 }
 
-
 void SimpleModal::ShowHelp() const
 {
 	if (!m_HelpTopic.empty())
-		Help::create(m_HelpTopic);
+		help::show(m_HelpTopic);
 }

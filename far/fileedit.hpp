@@ -35,11 +35,21 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "window.hpp"
 #include "editor.hpp"
 #include "plugin.hpp"
 #include "namelist.hpp"
 #include "codepage_selection.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 struct error_state_ex;
 
@@ -53,22 +63,22 @@ enum
 
 enum FFILEEDIT_FLAGS
 {
-	FFILEEDIT_NEW                   = 0x00010000,  // Этот файл СОВЕРШЕННО! новый или его успели стереть! Нету такого и все тут.
-	FFILEEDIT_REDRAWTITLE           = 0x00020000,  // Нужно редравить заголовок?
-	FFILEEDIT_FULLSCREEN            = 0x00040000,  // Полноэкранный режим?
-	FFILEEDIT_DISABLEHISTORY        = 0x00080000,  // Запретить запись в историю?
-	FFILEEDIT_ENABLEF6              = 0x00100000,  // Переключаться во вьювер можно?
-	FFILEEDIT_SAVETOSAVEAS          = 0x00200000,  // $ 17.08.2001 KM  Добавлено для поиска по AltF7.
+	FFILEEDIT_NEW                   = 16_bit,  // Этот файл СОВЕРШЕННО! новый или его успели стереть! Нету такого и все тут.
+	FFILEEDIT_REDRAWTITLE           = 17_bit,  // Нужно редравить заголовок?
+	FFILEEDIT_FULLSCREEN            = 18_bit,  // Полноэкранный режим?
+	FFILEEDIT_DISABLEHISTORY        = 19_bit,  // Запретить запись в историю?
+	FFILEEDIT_ENABLEF6              = 20_bit,  // Переключаться во вьювер можно?
+	FFILEEDIT_SAVETOSAVEAS          = 21_bit,  // $ 17.08.2001 KM  Добавлено для поиска по AltF7.
 	//   При редактировании найденного файла из архива для
 	//   клавиши F2 сделать вызов ShiftF2.
-	FFILEEDIT_SAVEWQUESTIONS        = 0x00400000,  // сохранить без вопросов
-	FFILEEDIT_LOCKED                = 0x00800000,  // заблокировать?
-	FFILEEDIT_OPENFAILED            = 0x01000000,  // файл открыть не удалось
-	FFILEEDIT_DELETEONCLOSE         = 0x02000000,  // удалить в деструкторе файл вместе с каталогом (если тот пуст)
-	FFILEEDIT_DELETEONLYFILEONCLOSE = 0x04000000,  // удалить в деструкторе только файл
-	FFILEEDIT_DISABLESAVEPOS        = 0x08000000,  // не сохранять позицию для файла
-	FFILEEDIT_CANNEWFILE            = 0x10000000,  // допускается новый файл?
-	FFILEEDIT_SERVICEREGION         = 0x20000000,  // используется сервисная область
+	FFILEEDIT_SAVEWQUESTIONS        = 22_bit,  // сохранить без вопросов
+	FFILEEDIT_LOCKED                = 23_bit,  // заблокировать?
+	FFILEEDIT_OPENFAILED            = 24_bit,  // файл открыть не удалось
+	FFILEEDIT_DELETEONCLOSE         = 25_bit,  // удалить в деструкторе файл вместе с каталогом (если тот пуст)
+	FFILEEDIT_DELETEONLYFILEONCLOSE = 26_bit,  // удалить в деструкторе только файл
+	FFILEEDIT_DISABLESAVEPOS        = 27_bit,  // не сохранять позицию для файла
+	FFILEEDIT_CANNEWFILE            = 28_bit,  // допускается новый файл?
+	FFILEEDIT_SERVICEREGION         = 29_bit,  // используется сервисная область
 };
 
 class FileEditor: public window,public EditorContainer
@@ -76,17 +86,17 @@ class FileEditor: public window,public EditorContainer
 	struct private_tag {};
 
 public:
-	static fileeditor_ptr create(const string&  Name, uintptr_t codepage, DWORD InitFlags, int StartLine = -1, int StartChar = -1, const string* PluginData = nullptr, EDITOR_FLAGS OpenModeExstFile = EF_OPENMODE_QUERY);
-	static fileeditor_ptr create(const string&  Name, uintptr_t codepage, DWORD InitFlags, int StartLine, int StartChar, const string* Title, int X1, int Y1, int X2, int Y2, int DeleteOnClose = 0, const window_ptr& Update = nullptr, EDITOR_FLAGS OpenModeExstFile = EF_OPENMODE_QUERY);
+	static fileeditor_ptr create(string_view Name, uintptr_t codepage, DWORD InitFlags, int StartLine = -1, int StartChar = -1, const string* PluginData = nullptr, EDITOR_FLAGS OpenModeExstFile = EF_OPENMODE_QUERY);
+	static fileeditor_ptr create(string_view Name, uintptr_t codepage, DWORD InitFlags, int StartLine, int StartChar, const string* Title, rectangle Position, int DeleteOnClose = 0, const window_ptr& Update = nullptr, EDITOR_FLAGS OpenModeExstFile = EF_OPENMODE_QUERY);
 
 	explicit FileEditor(private_tag) {}
-	virtual ~FileEditor() override;
+	~FileEditor() override;
 
-	virtual bool IsFileModified() const override { return m_editor->IsFileModified(); }
-	virtual int GetTypeAndName(string &strType, string &strName) override;
-	virtual long long VMProcess(int OpCode, void* vParam = nullptr, long long iParam = 0) override;
-	virtual void Show() override;
-	virtual Editor* GetEditor(void) override;
+	bool IsFileModified() const override { return m_editor->IsFileModified(); }
+	int GetTypeAndName(string &strType, string &strName) override;
+	long long VMProcess(int OpCode, void* vParam = nullptr, long long iParam = 0) override;
+	void Show() override;
+	Editor* GetEditor() override;
 
 	void ShowStatus() const;
 	void SetLockEditor(bool LockMode) const;
@@ -98,7 +108,7 @@ public:
 	void SetSaveToSaveAs(bool ToSaveAs) { m_Flags.Change(FFILEEDIT_SAVETOSAVEAS, ToSaveAs); InitKeyBar(); }
 	intptr_t EditorControl(int Command, intptr_t Param1, void *Param2);
 	bool SetCodePage(uintptr_t codepage);  //BUGBUG
-	int  SetCodePage(uintptr_t cp, bool redetect_default, bool ascii2def);
+	bool SetCodePageEx(uintptr_t cp);
 	bool IsFileChanged() const { return m_editor->IsFileChanged(); }
 	void GetEditorOptions(Options::EditorOptions& EdOpt) const;
 	void SetEditorOptions(const Options::EditorOptions& EdOpt) const;
@@ -108,20 +118,20 @@ public:
 	void AutoDeleteColors() const { m_editor->AutoDeleteColors(); }
 
 private:
-	virtual void DisplayObject() override;
-	virtual void InitKeyBar() override;
-	virtual bool ProcessKey(const Manager::Key& Key) override;
-	virtual bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
-	virtual void ShowConsoleTitle() override;
-	virtual void OnChangeFocus(bool focus) override;
-	virtual void SetScreenPosition() override;
-	virtual int GetType() const override { return windowtype_editor; }
-	virtual void OnDestroy() override;
-	virtual bool GetCanLoseFocus(bool DynamicMode = false) const override;
-	virtual bool CanFastHide() const override; // для нужд CtrlAltShift
-	virtual string GetTitle() const override;
-	virtual bool IsKeyBarVisible() const override;
-	virtual bool IsTitleBarVisible() const override;
+	void DisplayObject() override;
+	void InitKeyBar() override;
+	bool ProcessKey(const Manager::Key& Key) override;
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	void ShowConsoleTitle() override;
+	void OnChangeFocus(bool focus) override;
+	void SetScreenPosition() override;
+	int GetType() const override { return windowtype_editor; }
+	void OnDestroy() override;
+	bool GetCanLoseFocus(bool DynamicMode = false) const override;
+	bool CanFastHide() const override; // для нужд CtrlAltShift
+	string GetTitle() const override;
+	bool IsKeyBarVisible() const override;
+	bool IsTitleBarVisible() const override;
 
 	/* Ret:
 		0 - не удалять ничего
@@ -131,20 +141,20 @@ private:
 	void SetDeleteOnClose(int NewMode);
 	bool ReProcessKey(const Manager::Key& Key, bool CalledFromControl = true);
 	bool AskOverwrite(const string& FileName);
-	void Init(const string& Name, uintptr_t codepage, const string* Title, int StartLine, int StartChar, const string* PluginData, int DeleteOnClose, const window_ptr& Update, EDITOR_FLAGS OpenModeExstFile);
+	void Init(string_view Name, uintptr_t codepage, const string* Title, int StartLine, int StartChar, const string* PluginData, int DeleteOnClose, const window_ptr& Update, EDITOR_FLAGS OpenModeExstFile);
 	bool LoadFile(const string& Name, int &UserBreak, error_state_ex& ErrorState);
 	bool ReloadFile(uintptr_t codepage);
 	//TextFormat, Codepage и AddSignature используются ТОЛЬКО, если bSaveAs = true!
-	int SaveFile(const string& Name, int Ask, bool bSaveAs, error_state_ex& ErrorState, eol::type Eol = eol::type::none, uintptr_t Codepage = CP_UNICODE, bool AddSignature = false);
+	int SaveFile(const string& Name, int Ask, bool bSaveAs, error_state_ex& ErrorState, eol Eol = eol::none, uintptr_t Codepage = CP_UNICODE, bool AddSignature = false);
 	void SetTitle(const string* Title);
-	bool SetFileName(const string& NewFileName);
+	bool SetFileName(string_view NewFileName);
 	int ProcessEditorInput(const INPUT_RECORD& Rec);
-	DWORD EditorGetFileAttributes(const string& Name);
+	DWORD EditorGetFileAttributes(string_view Name);
 	void SetPluginData(const string* PluginData);
-	const wchar_t *GetPluginData() const { return strPluginData.data(); }
+	const string& GetPluginData() const { return strPluginData; }
 	bool LoadFromCache(EditorPosCache &pc) const;
 	void SaveToCache() const;
-	void ReadEvent(void);
+	void ReadEvent();
 	bool ProcessQuitKey(int FirstSave, bool NeedQuestion = true, bool DeleteWindow = true);
 	bool UpdateFileList() const;
 
@@ -162,7 +172,6 @@ private:
 	os::fs::find_data FileInfo;
 	wchar_t AttrStr[4]{};            // 13.02.2001 IS - Сюда запомним буквы атрибутов, чтобы не вычислять их много раз
 	DWORD m_FileAttributes{};          // 12.02.2001 IS - сюда запомним атрибуты файла при открытии, пригодятся где-нибудь...
-	bool FileAttributesModified{};  // 04.11.2003 SKV - надо ли восстанавливать аттрибуты при save
 	bool m_bClosing{};               // 28.04.2005 AY: true когда редактор закрываеться (т.е. в деструкторе)
 	bool bEE_READ_Sent{};
 	bool bLoaded{};
@@ -174,6 +183,5 @@ private:
 };
 
 bool dlgOpenEditor(string &strFileName, uintptr_t &codepage);
-bool dlgBadEditorCodepage(uintptr_t &codepage);
 
 #endif // FILEEDIT_HPP_4BC43BC9_43BB_4F5B_ADAE_E2C370D65E69

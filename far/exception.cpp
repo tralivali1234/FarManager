@@ -28,100 +28,88 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "exception.hpp"
+
+// Internal:
 #include "imports.hpp"
 #include "encoding.hpp"
-#include "tracer.hpp"
+
+// Platform:
+
+// Common:
+#include "common/string_utils.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 error_state error_state::fetch()
 {
-	error_state State;
-	State.Win32Error = GetLastError();
-	State.NtError = imports::instance().RtlGetLastNtStatus();
-	State.m_Engaged = true;
-	return State;
-}
-
-bool error_state::engaged() const
-{
-	return m_Engaged;
-}
-
-
-far_exception::far_exception(const string& Message, const char* Function, const char* File, int Line):
-	exception_impl(Message, Function, File, Line),
-	std::runtime_error(encoding::utf8::get_bytes(get_full_message()))
-{
-}
-
-far_exception::far_exception(const string& Message, std::vector<string>&& Stack, const char* Function, const char* File, int Line):
-	exception_impl(Message, Function, File, Line),
-	std::runtime_error(encoding::utf8::get_bytes(get_full_message())),
-	m_Stack(std::move(Stack))
-{
-}
-
-const std::vector<string>& far_exception::get_stack() const
-{
-	return m_Stack;
-}
-
-
-exception_context::exception_context(DWORD Code, const EXCEPTION_POINTERS* Pointers, bool ResumeThread):
-	m_Code(Code),
-	m_ExceptionRecord(),
-	m_ContextRecord(),
-	m_Pointers{ &m_ExceptionRecord, &m_ContextRecord },
-	m_ThreadHandle(os::OpenCurrentThread()),
-	m_ThreadId(GetCurrentThreadId()),
-	m_ResumeThread(ResumeThread)
-{
-	if (Pointers)
+	return
 	{
-		m_ExceptionRecord = *Pointers->ExceptionRecord;
-		m_ContextRecord = *Pointers->ContextRecord;
+		errno,
+		GetLastError(),
+		imports.RtlGetLastNtStatus(),
+	};
+}
+
+string error_state::ErrnoStr() const
+{
+	return _wcserror(Errno);
+}
+
+string error_state::Win32ErrorStr() const
+{
+	return os::GetErrorString(false, Win32Error);
+}
+
+string error_state::NtErrorStr() const
+{
+	return os::GetErrorString(true, NtError);
+}
+
+std::array<string, 3> error_state::format_errors() const
+{
+	return
+	{
+		os::format_system_error(Errno, ErrnoStr()),
+		os::format_system_error(Win32Error, Win32ErrorStr()),
+		os::format_system_error(NtError, NtErrorStr())
+	};
+}
+
+namespace detail
+{
+	far_base_exception::far_base_exception(string_view const Message, const char* const Function, string_view const File, int const Line):
+		error_state_ex(fetch(), Message),
+		m_Function(Function),
+		m_Location(format(FSTR(L"{0}:{1}"), File, Line)),
+		m_FullMessage(format(FSTR(L"{0} (at {1}, {2})"), Message, encoding::utf8::get_chars(m_Function), m_Location))
+	{
 	}
 
-	auto Previous = &m_ExceptionRecord;
-	for (auto Iterator = m_ExceptionRecord.ExceptionRecord; Iterator; Iterator = Iterator->ExceptionRecord)
+	std::string far_std_exception::convert_message() const
 	{
-		m_ExceptionRecords.emplace_back(*Iterator);
-		Previous->ExceptionRecord = &m_ExceptionRecords.back();
-		Previous = Iterator;
+		return encoding::utf8::get_bytes(full_message());
+	}
+
+	break_into_debugger::break_into_debugger()
+	{
+		os::debug::breakpoint(false);
 	}
 }
 
-exception_context::~exception_context()
+string error_state_ex::format_error() const
 {
-	if (m_ResumeThread)
-		ResumeThread(m_ThreadHandle.native_handle());
-}
+	auto Str = What;
+	if (!Str.empty())
+		append(Str, L": "sv);
 
+	constexpr auto UseNtMessages = false;
 
-std::exception_ptr CurrentException()
-{
-	return std::current_exception();
-}
-
-std::exception_ptr CurrentException(const std::exception& e)
-{
-	try
-	{
-		std::throw_with_nested(MAKE_FAR_EXCEPTION(L"->", tracer::get(&e)));
-	}
-	catch (...)
-	{
-		return CurrentException();
-	}
-}
-
-void RethrowIfNeeded(std::exception_ptr& Ptr)
-{
-	if (Ptr)
-	{
-		std::rethrow_exception(std::exchange(Ptr, {}));
-	}
+	return Str + os::format_system_error(
+		UseNtMessages? NtError : Win32Error,
+		UseNtMessages? NtErrorStr() : Win32ErrorStr());
 }

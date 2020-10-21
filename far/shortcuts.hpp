@@ -35,6 +35,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/enumerator.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 class VMenu2;
 struct MenuItemEx;
 
@@ -42,7 +53,6 @@ class Shortcuts
 {
 public:
 	NONCOPYABLE(Shortcuts);
-	MOVABLE(Shortcuts);
 
 	explicit Shortcuts(size_t Index);
 	~Shortcuts();
@@ -52,20 +62,23 @@ public:
 		string Folder;
 		string PluginFile;
 		string PluginData;
-		GUID PluginGuid{};
+		UUID PluginUuid{};
 	};
 
 	bool Get(data& Data);
-	void Add(const string& Folder, const GUID& PluginGuid, const string& PluginFile, const string& PluginData);
+	void Add(string_view Folder, const UUID& PluginUuid, string_view PluginFile, string_view PluginData);
 
 	static int Configure();
 
 	auto Enumerator()
 	{
 		using value_type = data;
-		return make_inline_enumerator<value_type>([this](size_t Index, value_type& Value)
+		return make_inline_enumerator<value_type>([this, Index = size_t{}](bool Reset, value_type& Value) mutable
 		{
-			return GetOne(Index, Value);
+			if (Reset)
+				Index = 0;
+
+			return GetOne(Index++, Value);
 		});
 	}
 
@@ -78,7 +91,7 @@ private:
 
 	std::list<shortcut> m_Items;
 	string m_KeyName;
-	movable<bool> m_Changed = false;
+	bool m_Changed{};
 };
 
 #endif // SHORTCUTS_HPP_29F659B5_FECB_4C3C_8499_D17E01487D1C

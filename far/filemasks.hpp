@@ -35,6 +35,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/preprocessor.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 enum FM_FLAGS
 {
 	FMF_SILENT = 1,
@@ -48,11 +59,11 @@ public:
 	filemasks();
 	~filemasks();
 
-	filemasks(filemasks&&);
-	filemasks& operator=(filemasks&&);
+	filemasks(filemasks&&) noexcept;
+	filemasks& operator=(filemasks&&) noexcept;
 
-	bool Set(const string& Masks, DWORD Flags = 0);
-	bool Compare(const string_view& Name) const;
+	bool assign(string_view Str, DWORD Flags = 0);
+	bool check(string_view Name) const;
 	bool empty() const;
 
 	static void ErrorMessage();

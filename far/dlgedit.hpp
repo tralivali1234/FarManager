@@ -42,9 +42,19 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   Это пока только шаблон, заготовка для будущего перехода
 */
 
+// Internal:
 #include "scrobj.hpp"
 #include "farcolor.hpp"
 
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct FarColor;
 class History;
 class EditControl;
 
@@ -67,20 +77,20 @@ public:
 	BitFlags& Flags() const;
 
 	DlgEdit(window_ptr Owner,size_t Index,DLGEDITTYPE Type);
-	virtual ~DlgEdit() override;
+	~DlgEdit() override;
 
-	virtual bool ProcessKey(const Manager::Key& Key) override;
-	virtual bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
+	bool ProcessKey(const Manager::Key& Key) override;
+	bool ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent) override;
 
-	virtual void Show() override;
-	virtual void SetPosition(int X1,int Y1,int X2,int Y2) override;
-	virtual void GetPosition(int& X1,int& Y1,int& X2,int& Y2) const override;
+	void Show() override;
+	void SetPosition(rectangle Where) override;
+	rectangle GetPosition() const override;
 
-	virtual void Hide() override;
-	virtual void ShowConsoleTitle() override;
-	virtual void SetScreenPosition() override;
-	virtual void ResizeConsole() override;
-	virtual long long VMProcess(int OpCode, void *vParam = nullptr, long long iParam = 0) override;
+	void Hide() override;
+	void ShowConsoleTitle() override;
+	void SetScreenPosition() override;
+	void ResizeConsole() override;
+	long long VMProcess(int OpCode, void *vParam = nullptr, long long iParam = 0) override;
 
 	void  SetDialogParent(DWORD Sets);
 	void  SetDropDownBox(bool NewDropDownBox);
@@ -91,7 +101,7 @@ public:
 	int   GetLength() const;
 	int   GetStrSize(int Row = -1) const;
 
-	void  SetInputMask(const string& InputMask);
+	void  SetInputMask(string_view InputMask);
 	string GetInputMask() const;
 
 	void  SetOvertypeMode(bool Mode);
@@ -103,9 +113,9 @@ public:
 	bool  GetClearFlag() const;
 
 	void  Changed();
-	void  SetString(const string& Str);
-	void  InsertString(const string& Str);
-	void  SetHiString(const string& Str);
+	void  SetString(string_view Str);
+	void  InsertString(string_view Str);
+	void  SetHiString(string_view Str);
 	const string& GetString(int Row = -1) const;            // Row==-1 - current line
 
 	void  SetCurPos(int NewCol, int NewRow=-1); // Row==-1 - current line
@@ -148,10 +158,15 @@ public:
 	bool HistoryGetSimilar(string &strStr, int LastCmdPartLength, bool bAppend=false) const;
 
 	const std::unique_ptr<History>& GetHistory() const { return iHistory; }
-	void SetHistory(const string& Name);
+	void SetHistory(string_view Name);
 
 private:
 	friend class SetAutocomplete;
+
+	void DisplayObject() override;
+	static void EditChange(void* aParam);
+	void DoEditChange() const;
+	Dialog* GetDialog() const;
 
 	size_t m_Index;
 	DLGEDITTYPE Type;
@@ -160,11 +175,6 @@ private:
 #if defined(PROJECT_DI_MEMOEDIT)
 	Editor *multiEdit;
 #endif
-
-	virtual void DisplayObject() override;
-	static void EditChange(void* aParam);
-	void DoEditChange() const;
-	Dialog* GetDialog(void)const;
 };
 
 #endif // DLGEDIT_HPP_976E81C0_DB62_4FC2_8FFD_73529F28E044

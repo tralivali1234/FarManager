@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "foldtree.hpp"
+
+// Internal:
 #include "keyboard.hpp"
 #include "keys.hpp"
 #include "treelist.hpp"
@@ -47,19 +47,30 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "lang.hpp"
 #include "keybar.hpp"
 #include "string_utils.hpp"
+#include "global.hpp"
 
-FolderTree::FolderTree(private_tag, int iModalMode, int IsStandalone, bool IsFullScreen):
-	Tree(nullptr),
-	FindEdit(nullptr),
-	ModalMode(iModalMode),
-	IsFullScreen(IsFullScreen),
-	IsStandalone(IsStandalone)
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/string_utils.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+FolderTree::FolderTree(private_tag, int ModalMode, int IsStandalone, bool IsFullScreen):
+	m_Tree(nullptr),
+	m_FindEdit(nullptr),
+	m_ModalMode(ModalMode),
+	m_IsFullScreen(IsFullScreen),
+	m_IsStandalone(IsStandalone)
 {
 }
 
-foldertree_ptr FolderTree::create(string &strResultFolder, int iModalMode, int IsStandalone, bool IsFullScreen)
+foldertree_ptr FolderTree::create(string &strResultFolder, int ModalMode, int IsStandalone, bool IsFullScreen)
 {
-	auto FoldertreePtr = std::make_shared<FolderTree>(private_tag(), iModalMode, IsStandalone, IsFullScreen);
+	auto FoldertreePtr = std::make_shared<FolderTree>(private_tag(), ModalMode, IsStandalone, IsFullScreen);
 	FoldertreePtr->init(strResultFolder);
 	return FoldertreePtr;
 }
@@ -69,54 +80,54 @@ void FolderTree::init(string &strResultFolder)
 	m_windowKeyBar = std::make_unique<KeyBar>(shared_from_this());
 
 	SetRestoreScreenMode(true);
-	if (ModalMode != MODALTREE_FREE)
+	if (m_ModalMode != MODALTREE_FREE)
 		strResultFolder.clear();
 	SetCoords();
 
-	Tree = TreeList::create(nullptr, ModalMode);
+	m_Tree = TreeList::create(nullptr, m_ModalMode);
 
 		SetMacroMode(MACROAREA_FINDFOLDER);
-		strLastName.clear();
-		Tree->SetPosition(m_X1,m_Y1,m_X2,m_Y2);
+		m_LastName.clear();
+		m_Tree->SetPosition(m_Where);
 
-		if (ModalMode == MODALTREE_FREE)
-			Tree->SetRootDir(strResultFolder);
+		if (m_ModalMode == MODALTREE_FREE)
+			m_Tree->SetRootDir(strResultFolder);
 
-		Tree->SetVisible(true);
-		Tree->Update(0);
+		m_Tree->SetVisible(true);
+		m_Tree->Update(0);
 
 		// если было прерывание в процессе сканирования и это было дерево копира...
-		if (Tree->GetExitCode())
+		if (m_Tree->GetExitCode())
 		{
-			FindEdit = std::make_unique<EditControl>(shared_from_this(),shared_from_this().get());
-			FindEdit->SetEditBeyondEnd(false);
-			FindEdit->SetPersistentBlocks(Global->Opt->Dialogs.EditBlock);
+			m_FindEdit = std::make_unique<EditControl>(shared_from_this(),shared_from_this().get());
+			m_FindEdit->SetEditBeyondEnd(false);
+			m_FindEdit->SetPersistentBlocks(Global->Opt->Dialogs.EditBlock);
 			InitKeyBar();
 			Global->WindowManager->ExecuteWindow(shared_from_this()); //OT
 			Global->WindowManager->ExecuteModal(shared_from_this()); //OT
 		}
 
-		strResultFolder = strNewFolder;
+		strResultFolder = m_NewFolder;
 }
 
 void FolderTree::DisplayObject()
 {
 	//if(!TopScreen) TopScreen=new SaveScreen;
-	if (ModalMode == MODALTREE_FREE)
+	if (m_ModalMode == MODALTREE_FREE)
 	{
-		string strSelFolder(Tree->GetCurDir());
+		const auto strSelFolder = m_Tree->GetCurDir();
 		//Tree->Update(UPDATE_KEEP_SELECTION);
-		Tree->Update(0);
-		Tree->GoToFile(strSelFolder);
+		m_Tree->Update(0);
+		m_Tree->GoToFile(strSelFolder);
 	}
 
-	Tree->Redraw();
+	m_Tree->Redraw();
 	Shadow();
 	DrawEdit();
 
-	if (!IsFullScreen)
+	if (!m_IsFullScreen)
 	{
-		m_windowKeyBar->SetPosition(0,ScrY,ScrX,ScrY);
+		m_windowKeyBar->SetPosition({ 0, ScrY, ScrX, ScrY });
 		m_windowKeyBar->Show();
 	}
 	else
@@ -126,16 +137,16 @@ void FolderTree::DisplayObject()
 
 void FolderTree::SetCoords()
 {
-	if (IsFullScreen)
+	if (m_IsFullScreen)
 	{
-		SetPosition(0,0,ScrX,ScrY);
+		SetPosition({ 0, 0, ScrX, ScrY });
 	}
 	else
 	{
-		if (IsStandalone)
-			SetPosition(4,2,ScrX-4,ScrY-4);
+		if (m_IsStandalone)
+			SetPosition({ 4, 2, ScrX - 4, ScrY - 4 });
 		else
-			SetPosition(ScrX/3,2,ScrX-7,ScrY-4);
+			SetPosition({ ScrX / 3, 2, ScrX - 7, ScrY - 4 });
 	}
 }
 
@@ -143,12 +154,12 @@ void FolderTree::ResizeConsole()
 {
 	Hide();
 	SetCoords();
-	Tree->SetPosition(m_X1,m_Y1,m_X2,m_Y2);
+	m_Tree->SetPosition(m_Where);
 }
 
 void FolderTree::SetScreenPosition()
 {
-	if (IsFullScreen)
+	if (m_IsFullScreen)
 		m_windowKeyBar->Hide();
 
 	SetCoords();
@@ -180,10 +191,9 @@ bool FolderTree::ProcessKey(const Manager::Key& Key)
 	switch (LocalKey)
 	{
 		case KEY_F1:
-		{
-			Help::create(L"FindFolder");
-		}
-		break;
+			help::show(L"FindFolder"sv);
+			break;
+
 		case KEY_ESC:
 		case KEY_F10:
 			Global->WindowManager->DeleteWindow();
@@ -191,28 +201,28 @@ bool FolderTree::ProcessKey(const Manager::Key& Key)
 			break;
 		case KEY_NUMENTER:
 		case KEY_ENTER:
-			strNewFolder = Tree->GetCurDir();
+			m_NewFolder = m_Tree->GetCurDir();
 
-			if (os::fs::exists(strNewFolder))
+			if (os::fs::exists(m_NewFolder))
 			{
 				Global->WindowManager->DeleteWindow();
 				SetExitCode(XC_MODIFIED);
 			}
 			else
 			{
-				Tree->ProcessKey(Manager::Key(KEY_ENTER));
+				m_Tree->ProcessKey(Manager::Key(KEY_ENTER));
 				DrawEdit();
 			}
 
 			break;
 		case KEY_F5:
-			IsFullScreen=!IsFullScreen;
+			m_IsFullScreen=!m_IsFullScreen;
 			ResizeConsole();
 			Show();
 			return true;
 		case KEY_CTRLR:		case KEY_RCTRLR:
 		case KEY_F2:
-			Tree->ProcessKey(Manager::Key(KEY_CTRLR));
+			m_Tree->ProcessKey(Manager::Key(KEY_CTRLR));
 			DrawEdit();
 			break;
 		case KEY_CTRLNUMENTER:       case KEY_RCTRLNUMENTER:
@@ -220,7 +230,7 @@ bool FolderTree::ProcessKey(const Manager::Key& Key)
 		case KEY_CTRLENTER:          case KEY_RCTRLENTER:
 		case KEY_CTRLSHIFTENTER:     case KEY_RCTRLSHIFTENTER:
 		{
-			Tree->FindPartName(FindEdit->GetString(), TRUE, LocalKey == KEY_CTRLSHIFTENTER || LocalKey == KEY_RCTRLSHIFTENTER || LocalKey == KEY_CTRLSHIFTNUMENTER || LocalKey == KEY_RCTRLSHIFTNUMENTER? -1 : 1);
+			m_Tree->FindPartName(m_FindEdit->GetString(), TRUE, any_of(LocalKey, KEY_CTRLSHIFTENTER, KEY_RCTRLSHIFTENTER, KEY_CTRLSHIFTNUMENTER, KEY_RCTRLSHIFTNUMENTER)? -1 : 1);
 			DrawEdit();
 		}
 		break;
@@ -242,15 +252,15 @@ bool FolderTree::ProcessKey(const Manager::Key& Key)
 		case KEY_MSWHEEL_DOWN:
 		case(KEY_MSWHEEL_DOWN | KEY_ALT):
 		case(KEY_MSWHEEL_DOWN | KEY_RALT):
-			FindEdit->ClearString();
-			Tree->ProcessKey(Key);
+			m_FindEdit->ClearString();
+			m_Tree->ProcessKey(Key);
 			DrawEdit();
 			break;
 		default:
 
-			if (LocalKey == KEY_ADD || LocalKey == KEY_SUBTRACT) // OFM: Gray+/Gray- navigation
+			if (any_of(LocalKey, KEY_ADD, KEY_SUBTRACT)) // OFM: Gray+/Gray- navigation
 			{
-				Tree->ProcessKey(Key);
+				m_Tree->ProcessKey(Key);
 				DrawEdit();
 				break;
 			}
@@ -264,15 +274,15 @@ bool FolderTree::ProcessKey(const Manager::Key& Key)
 			          Key='-';
 			      }
 			*/
-			if (FindEdit->ProcessKey(Key))
+			if (m_FindEdit->ProcessKey(Key))
 			{
-				const auto& strName = FindEdit->GetString();
+				const auto& strName = m_FindEdit->GetString();
 
-				if (Tree->FindPartName(strName, FALSE, 1))
-					strLastName = strName;
+				if (m_Tree->FindPartName(strName, FALSE, 1))
+					m_LastName = strName;
 				else
 				{
-					FindEdit->SetString(strLastName);
+					m_FindEdit->SetString(m_LastName);
 				}
 
 				DrawEdit();
@@ -296,10 +306,7 @@ bool FolderTree::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 		return true;
 	}
 
-	int MsX=MouseEvent->dwMousePosition.X;
-	int MsY=MouseEvent->dwMousePosition.Y;
-
-	if ((MsX<m_X1 || MsY<m_Y1 || MsX>m_X2 || MsY>m_Y2) && IntKeyState.MouseEventFlags != MOUSE_MOVED)
+	if (!m_Where.contains(MouseEvent->dwMousePosition) && IntKeyState.MouseEventFlags != MOUSE_MOVED)
 	{
 		if (!(MouseEvent->dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) && (IntKeyState.PrevMouseButtonState&FROM_LEFT_1ST_BUTTON_PRESSED) && (Global->Opt->Dialogs.MouseButton&DMOUSEBUTTON_LEFT))
 			ProcessKey(Manager::Key(KEY_ESC));
@@ -309,11 +316,11 @@ bool FolderTree::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 		return true;
 	}
 
-	if (MsY == m_Y2-2)
-		FindEdit->ProcessMouse(MouseEvent);
+	if (MouseEvent->dwMousePosition.Y == m_Where.bottom - 2)
+		m_FindEdit->ProcessMouse(MouseEvent);
 	else
 	{
-		if (!Tree->ProcessMouse(MouseEvent))
+		if (!m_Tree->ProcessMouse(MouseEvent))
 			SetExitCode(XC_MODIFIED);
 		else
 			DrawEdit();
@@ -325,19 +332,19 @@ bool FolderTree::ProcessMouse(const MOUSE_EVENT_RECORD *MouseEvent)
 
 void FolderTree::DrawEdit() const
 {
-	int FindY=m_Y2-2;
+	const auto FindY = m_Where.bottom - 2;
 	const auto& SearchTxt = msg(lng::MFoldTreeSearch);
-	GotoXY(m_X1+1,FindY);
+	GotoXY(m_Where.left + 1, FindY);
 	SetColor(COL_PANELTEXT);
-	Text(SearchTxt + L"  "s);
-	FindEdit->SetPosition(m_X1 + static_cast<int>(SearchTxt.size()) + 2, FindY, std::min(m_X2 - 1, m_X1 + 25), FindY);
-	FindEdit->SetObjectColor(COL_DIALOGEDIT);
-	FindEdit->Show();
+	Text(concat(SearchTxt, L"  "sv));
+	m_FindEdit->SetPosition({ m_Where.left + static_cast<int>(SearchTxt.size()) + 2, FindY, std::min(m_Where.right - 1, m_Where.left + 25), FindY });
+	m_FindEdit->SetObjectColor(COL_DIALOGEDIT);
+	m_FindEdit->Show();
 
-	if (WhereX()<m_X2)
+	if (WhereX() < m_Where.right)
 	{
 		SetColor(COL_PANELTEXT);
-		Text(string(m_X2 - WhereX(), L' '));
+		Text(string(m_Where.right - WhereX(), L' '));
 	}
 }
 

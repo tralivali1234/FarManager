@@ -36,6 +36,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+#include "plugin.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
 //#define RE_DEBUG
 
 //! Possible compile and runtime errors returned by LastError.
@@ -103,15 +114,14 @@ struct MatchHash
 Expressions must be Compile'ed first,
 and than Match string or Search for matching fragment.
 */
-class RegExp:noncopyable
+class RegExp
 {
 public:
 	struct REOpCode;
 	struct UniSet;
 	struct StateStackItem;
 
-public:
-	private:
+private:
 		// code
 		std::vector<REOpCode> code;
 		char slashChar;
@@ -140,12 +150,12 @@ public:
 		std::wstring resrc;
 #endif
 
-		int CalcLength(const wchar_t* src,int srclength);
+		int CalcLength(string_view src);
 		int InnerCompile(const wchar_t* start, const wchar_t* src, int srclength, int options);
 
-		int InnerMatch(const wchar_t* start, const wchar_t* str, const wchar_t* end, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch, std::vector<StateStackItem>& stack) const;
+		int InnerMatch(const wchar_t* start, const wchar_t* str, const wchar_t* strend, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch, std::vector<StateStackItem>& stack) const;
 
-		void TrimTail(const wchar_t* start, const wchar_t*& end) const;
+		void TrimTail(const wchar_t* start, const wchar_t*& strend) const;
 
 		// BUGBUG not thread safe!
 		// TODO: split to compile errors (stateful) and match errors (stateless)
@@ -157,6 +167,9 @@ public:
 		//! Default constructor.
 		RegExp();
 		~RegExp();
+
+		RegExp(RegExp&&) noexcept;
+		RegExp& operator=(RegExp&&) = delete;
 
 		/*! Compile regular expression
 		    Generate internal op-codes of expression.
@@ -173,7 +186,7 @@ public:
 		    \sa ErrorPosition
 		    \sa options
 		*/
-		int Compile(const wchar_t* src,int options=OP_PERLSTYLE|OP_OPTIMIZE);
+		int Compile(string_view src, int options=OP_PERLSTYLE|OP_OPTIMIZE);
 
 		/*! Try to optimize regular expression
 		    Significally speedup Search mode in some cases.
@@ -182,8 +195,7 @@ public:
 		int Optimize();
 
 		/*! Try to match string with regular expression
-		    \param textstart - start of string to match
-		    \param textend - point to symbol after last symbols of the string.
+		    \param text - string to match
 		    \param match - array of SMatch structures that receive brackets positions.
 		    \param matchcount - in/out parameter that indicate number of items in
 		    match array on input, and number of brackets on output.
@@ -191,30 +203,22 @@ public:
 		    \return 1 on success, 0 if match failed.
 		    \sa SMatch
 		*/
-		int Match(const wchar_t* textstart, const wchar_t* textend, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
-		/*! Same as Match(const char* textstart,const char* textend,...), but for ASCIIZ string.
-		    textend calculated automatically.
-		*/
-		int Match(const wchar_t* textstart, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
+		int Match(string_view text, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
 		/*! Advanced version of match. Can be used for multiple matches
 		    on one string (to imitate /g modifier of perl regexp
 		*/
-		int MatchEx(const wchar_t* datastart, const wchar_t* textstart, const wchar_t* textend, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
+		int MatchEx(string_view text, size_t From, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
 		/*! Try to find substring that will match regexp.
 		    Parameters and return value are the same as for Match.
 		    It is highly recommended to call Optimize before Search.
 		*/
-		int Search(const wchar_t* textstart, const wchar_t* textend, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
-		/*! Same as Search with specified textend, but for ASCIIZ strings only.
-		    textend calculated automatically.
-		*/
-		int Search(const wchar_t* textstart, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
+		int Search(string_view text, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
 		/*! Advanced version of search. Can be used for multiple searches
 		    on one string (to imitate /g modifier of perl regexp
 		*/
-		int SearchEx(const wchar_t* datastart, const wchar_t* textstart, const wchar_t* textend, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
+		int SearchEx(string_view text, size_t From, RegExpMatch* match, intptr_t& matchcount, MatchHash* hmatch = nullptr) const;
 
-		bool Search(const string& Str) const;
+		bool Search(string_view Str) const;
 
 		/*! Get last error
 		    \return code of the last error

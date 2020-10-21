@@ -34,32 +34,54 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "farcolor.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct FarColor;
 
 namespace colors
 {
+	COLORREF index_value(COLORREF Colour);
+	COLORREF color_value(COLORREF Colour);
+	COLORREF alpha_value(COLORREF Colour);
+
+	bool is_opaque(COLORREF Colour);
+	bool is_transparent(COLORREF Colour);
+
+	COLORREF opaque(COLORREF Colour);
+	COLORREF transparent(COLORREF Colour);
+
+	void make_opaque(COLORREF& Colour);
+	void make_transparent(COLORREF& Colour);
+
+	size_t color_hash(const FarColor& Value);
+
 	FarColor merge(const FarColor& Bottom, const FarColor& Top);
 	WORD FarColorToConsoleColor(const FarColor& Color);
 	FarColor ConsoleColorToFarColor(WORD Color);
+	COLORREF ConsoleIndexToTrueColor(size_t Index);
 	const FarColor& PaletteColorToFarColor(PaletteColors ColorIndex);
 	const FarColor* StoreColor(const FarColor& Value);
+	COLORREF ARGB2ABGR(int Color);
 	// ([[T]FFFFFFFF][:[T]BBBBBBBB])
 	string_view ExtractColorInNewFormat(string_view Str, FarColor& Color, bool& Stop);
 }
 
-namespace std
+template<>
+struct std::hash<FarColor>
 {
-	template<>
-	struct hash<FarColor>
+	size_t operator()(const FarColor& Value) const noexcept
 	{
-		size_t operator()(const FarColor& Key) const
-		{
-			return make_hash(Key.Flags)
-			     ^ make_hash(Key.BackgroundColor)
-			     ^ make_hash(Key.ForegroundColor)
-			     ^ make_hash(Key.Reserved);
-		}
-	};
-}
+		return colors::color_hash(Value);
+	}
+};
 
 #endif // COLORMIX_HPP_2A689A10_E8AA_4B87_B167_FAAF812AC90F

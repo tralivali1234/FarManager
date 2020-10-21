@@ -31,27 +31,23 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "dirinfo.hpp"
+
+// Internal:
 #include "keys.hpp"
 #include "scantree.hpp"
-#include "savescr.hpp"
-#include "refreshwindowmanager.hpp"
 #include "TPreRedrawFunc.hpp"
 #include "ctrlobj.hpp"
 #include "filefilter.hpp"
 #include "interf.hpp"
 #include "message.hpp"
 #include "taskbar.hpp"
-#include "constitle.hpp"
 #include "keyboard.hpp"
 #include "flink.hpp"
 #include "pathmix.hpp"
 #include "strmix.hpp"
 #include "wakeful.hpp"
-#include "config.hpp"
 #include "filepanels.hpp"
 #include "panel.hpp"
 #include "plugins.hpp"
@@ -59,105 +55,110 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "lang.hpp"
 #include "string_utils.hpp"
 #include "cvtname.hpp"
+#include "copy_progress.hpp"
+#include "global.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/scope_exit.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 static void PR_DrawGetDirInfoMsg();
 
 struct DirInfoPreRedrawItem : public PreRedrawItem
 {
 	DirInfoPreRedrawItem():
-		PreRedrawItem(PR_DrawGetDirInfoMsg),
-		Size()
+		PreRedrawItem(PR_DrawGetDirInfoMsg)
 	{}
 
-	string Title;
-	string Name;
-	unsigned long long Size;
+	string_view Title;
+	string_view Name;
+	unsigned long long Items{};
+	unsigned long long Size{};
 };
 
-static void DrawGetDirInfoMsg(const string& Title,const wchar_t *Name, unsigned long long Size)
+static void DirInfoMsgImpl(string_view const Title, string_view const Name, unsigned long long const Items, unsigned long long const Size)
 {
-	Message(0,
+	Message(MSG_LEFTALIGN,
 		Title,
 		{
 			msg(lng::MScanningFolder),
-			Name,
-			trim_left(FileSizeToStr(Size, 8, COLUMN_FLOATSIZE | COLUMN_COMMAS))
+			pad_right(truncate_right(Name, copy_progress::CanvasWidth()), copy_progress::CanvasWidth()),
+			L"\1"s,
+			copy_progress::FormatCounter(lng::MCopyFilesTotalInfo, lng::MCopyBytesTotalInfo, Items, 0, false, copy_progress::CanvasWidth() - 5),
+			copy_progress::FormatCounter(lng::MCopyBytesTotalInfo, lng::MCopyFilesTotalInfo, Size, 0, false, copy_progress::CanvasWidth() - 5),
 		},
 		{});
-	if (!PreRedrawStack().empty())
+}
+
+void DirInfoMsg(string_view const Title, string_view const Name, unsigned long long const Items, unsigned long long const Size)
+{
+	DirInfoMsgImpl(Title, Name, Items, Size);
+
+	TPreRedrawFunc::instance()([&](DirInfoPreRedrawItem& Item)
 	{
-		const auto item = dynamic_cast<DirInfoPreRedrawItem*>(PreRedrawStack().top());
-		assert(item);
-		if (item)
-		{
-			item->Title = Title;
-			item->Name = Name;
-			item->Size = Size;
-		}
-	}
+		Item.Title = Title;
+		Item.Name = Name;
+		Item.Items = Items;
+		Item.Size = Size;
+	});
 }
 
 static void PR_DrawGetDirInfoMsg()
 {
-	if (!PreRedrawStack().empty())
+	TPreRedrawFunc::instance()([](const DirInfoPreRedrawItem& Item)
 	{
-		const auto item = dynamic_cast<const DirInfoPreRedrawItem*>(PreRedrawStack().top());
-		assert(item);
-		if (item)
-		{
-			DrawGetDirInfoMsg(item->Title, item->Name.data(), item->Size);
-		}
-	}
+		DirInfoMsgImpl(Item.Title, Item.Name, Item.Items, Item.Size);
+	});
 }
 
-int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, getdirinfo_message_delay MessageDelay, FileFilter *Filter, DWORD Flags)
+int GetDirInfo(string_view const DirName, DirInfoData& Data, FileFilter *Filter, dirinfo_callback const Callback, DWORD Flags)
 {
-	SaveScreen SaveScr;
-	SCOPED_ACTION(UndoGlobalSaveScrPtr)(&SaveScr);
 	SCOPED_ACTION(TPreRedrawFuncGuard)(std::make_unique<DirInfoPreRedrawItem>());
-	SCOPED_ACTION(IndeterminateTaskbar)(MessageDelay != getdirinfo_infinite_delay);
+	SCOPED_ACTION(taskbar::indeterminate)(false);
 	SCOPED_ACTION(wakeful);
-	ScanTree ScTree(false, true, (Flags & GETDIRINFO_SCANSYMLINKDEF? (DWORD)-1 : (Flags & GETDIRINFO_SCANSYMLINK)));
-	auto StartTime = std::chrono::steady_clock::now();
+
+	ScanTree ScTree(false, true, (Flags & GETDIRINFO_SCANSYMLINKDEF? static_cast<DWORD>(-1) : (Flags & GETDIRINFO_SCANSYMLINK)));
 	SetCursorType(false, 0);
 	/* $ 20.03.2002 DJ
 	   для . - покажем имя родительского каталога
 	*/
-	const wchar_t *ShowDirName = DirName.data();
+	string_view ShowDirName = DirName;
 
 	const auto strFullDirName = ConvertNameToFull(DirName);
-	if (DirName.size() ==1 && DirName[0] == L'.')
+	if (DirName == L"."sv)
 	{
 		const auto pos = FindLastSlash(strFullDirName);
 		if (pos != string::npos)
 		{
-			ShowDirName = strFullDirName.data() + pos + 1;
+			ShowDirName = string_view(strFullDirName).substr(pos + 1);
 		}
 	}
 
-	std::unique_ptr<RefreshWindowManager> frref;
-	if (!(Flags & GETDIRINFO_NOREDRAW))
-		frref = std::make_unique<RefreshWindowManager>(ScrX, ScrY, MessageDelay != getdirinfo_infinite_delay);
-
 	DWORD SectorsPerCluster=0,BytesPerSector=0,FreeClusters=0,Clusters=0;
 
-	if (GetDiskFreeSpace(GetPathRoot(strFullDirName).data(),&SectorsPerCluster,&BytesPerSector,&FreeClusters,&Clusters))
+	if (GetDiskFreeSpace(GetPathRoot(strFullDirName).c_str(), &SectorsPerCluster, &BytesPerSector, &FreeClusters, &Clusters))
 		Data.ClusterSize=SectorsPerCluster*BytesPerSector;
 
 	Data.DirCount=Data.FileCount=0;
 	Data.FileSize=Data.AllocationSize=Data.FilesSlack=Data.MFTOverhead=0;
-	ScTree.SetFindPath(DirName,L"*");
+	ScTree.SetFindPath(DirName, L"*"sv);
 	std::unordered_set<unsigned long long> FileIds;
 	DWORD FileSystemFlags = 0;
 	string FileSystemName;
 	const auto CheckHardlinks = os::fs::GetVolumeInformation(GetPathRoot(DirName), nullptr, nullptr, nullptr, &FileSystemFlags, &FileSystemName)?
 		IsWindows7OrGreater()?
 			(FileSystemFlags & FILE_SUPPORTS_HARD_LINKS) != 0 :
-			FileSystemName == L"NTFS" :
+			FileSystemName == L"NTFS"sv :
 		false;
 	string strFullName;
 	// Временные хранилища имён каталогов
-	string strCurDirName, strLastDirName;
+	string strLastDirName;
 	os::fs::find_data FindData;
 	while (ScTree.GetNextName(FindData,strFullName))
 	{
@@ -196,18 +197,9 @@ int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, ge
 			}
 		}
 
-		const auto CurTime = std::chrono::steady_clock::now();
+		Callback(ShowDirName, Data.DirCount + Data.FileCount, Data.FileSize);
 
-		if (MessageDelay != getdirinfo_infinite_delay && CurTime - StartTime > std::chrono::milliseconds(MessageDelay))
-		{
-			StartTime=CurTime;
-			MessageDelay = getdirinfo_default_delay;
-			ConsoleTitle::SetFarTitle(concat(msg(lng::MScanningFolder), L' ', ShowDirName));
-			SetCursorType(false, 0);
-			DrawGetDirInfoMsg(Title,ShowDirName, Data.FileSize);
-		}
-
-		if (FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		if (FindData.Attributes & FILE_ATTRIBUTE_DIRECTORY)
 		{
 			// Счётчик каталогов наращиваем только если не включен фильтр,
 			// в противном случае это будем делать в подсчёте количества файлов
@@ -218,7 +210,7 @@ int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, ge
 				// Если каталог не попадает под фильтр то его надо полностью
 				// пропустить - иначе при включенном подсчёте total
 				// он учтётся (mantis 551)
-				if (!Filter->FileInFilter(FindData, nullptr, &strFullName))
+				if (!Filter->FileInFilter(FindData, {}, strFullName))
 					ScTree.SkipDir();
 			}
 		}
@@ -229,7 +221,7 @@ int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, ge
 			*/
 			if ((Flags&GETDIRINFO_USEFILTER))
 			{
-				if (!Filter->FileInFilter(FindData,nullptr, &strFullName))
+				if (!Filter->FileInFilter(FindData, {}, strFullName))
 					continue;
 			}
 
@@ -238,32 +230,32 @@ int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, ge
 			// фильтра.
 			if ((Flags&GETDIRINFO_USEFILTER))
 			{
-				strCurDirName = strFullName;
-				CutToSlash(strCurDirName); //???
+				string_view CurDirName = strFullName;
+				CutToSlash(CurDirName); //???
 
-				if (!equal_icase(strCurDirName, strLastDirName))
+				if (!equal_icase(CurDirName, strLastDirName))
 				{
 					Data.DirCount++;
-					strLastDirName = strCurDirName;
+					strLastDirName = CurDirName;
 				}
 			}
 
 			Data.FileCount++;
 
-			Data.FileSize += FindData.nFileSize;
+			Data.FileSize += FindData.FileSize;
 
 			if (!CheckHardlinks || !FindData.FileId || FileIds.emplace(FindData.FileId).second)
 			{
-				Data.AllocationSize += FindData.nAllocationSize;
-				if(FindData.nAllocationSize > FindData.nFileSize)
+				Data.AllocationSize += FindData.AllocationSize;
+				if(FindData.AllocationSize > FindData.FileSize)
 				{
-					if(FindData.nAllocationSize >= Data.ClusterSize)
+					if(FindData.AllocationSize >= Data.ClusterSize)
 					{
-						Data.FilesSlack += FindData.nAllocationSize - FindData.nFileSize;
+					Data.FilesSlack += FindData.AllocationSize - FindData.FileSize;
 					}
 					else
 					{
-						Data.MFTOverhead += FindData.nAllocationSize - FindData.nFileSize;
+						Data.MFTOverhead += FindData.AllocationSize - FindData.FileSize;
 					}
 				}
 			}
@@ -275,83 +267,26 @@ int GetDirInfo(const string& Title, const string& DirName, DirInfoData& Data, ge
 
 static int PluginSearchMsgOut;
 
-static void PR_FarGetPluginDirListMsg();
-
-struct PluginDirInfoPreRedrawItem : public PreRedrawItem
+static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const PluginPanelItem *CurPanelItem, string_view const PluginSearchPath, BasicDirInfoData& Data)
 {
-	PluginDirInfoPreRedrawItem():
-		PreRedrawItem(PR_FarGetPluginDirListMsg),
-		Flags()
-	{}
-
-	string Name;
-	DWORD Flags;
-};
-
-static void FarGetPluginDirListMsg(const string& Name,DWORD Flags)
-{
-	Message(Flags,
-		L"",
-		{
-			msg(lng::MPreparingList),
-			Name
-		},
-		{});
-	if (!PreRedrawStack().empty())
+	const auto MakeCopy = [](string_view const Str)
 	{
-		const auto item = dynamic_cast<PluginDirInfoPreRedrawItem*>(PreRedrawStack().top());
-		assert(item);
-		if (item)
-		{
-			item->Name = Name;
-			item->Flags = Flags;
-		}
-	}
-}
-
-static void PR_FarGetPluginDirListMsg()
-{
-	if (!PreRedrawStack().empty())
-	{
-		const auto item = dynamic_cast<const PluginDirInfoPreRedrawItem*>(PreRedrawStack().top());
-		assert(item);
-		if (item)
-		{
-			FarGetPluginDirListMsg(item->Name, item->Flags);
-		}
-	}
-}
-
-static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const PluginPanelItem *CurPanelItem, const string& strPluginSearchPath)
-{
-	auto strFullName = strPluginSearchPath + CurPanelItem->FileName;
-	std::replace(ALL_RANGE(strFullName), L'\x1', L'\\');
+		auto Buffer = std::make_unique<wchar_t[]>(Str.size() + 1);
+		*copy_string(Str, Buffer.get()) = {};
+		return Buffer.release();
+	};
 
 	auto NewItem = *CurPanelItem;
 
-	{
-		auto Buffer = std::make_unique<wchar_t[]>(strFullName.size() + 1);
-		*std::copy(ALL_CONST_RANGE(strFullName), Buffer.get()) = L'\0';
-		NewItem.FileName = Buffer.release();
-	}
+	NewItem.FileName = MakeCopy(path::join(PluginSearchPath, CurPanelItem->FileName));
 
-	NewItem.AlternateFileName=nullptr;
+	NewItem.AlternateFileName = {};
 
 	if (CurPanelItem->Description)
-	{
-		const auto RequiredSize = wcslen(CurPanelItem->Description) + 1;
-		auto Buffer = std::make_unique<wchar_t[]>(RequiredSize);
-		std::wmemcpy(Buffer.get(), CurPanelItem->Description, RequiredSize);
-		NewItem.Description = Buffer.release();
-	}
+		NewItem.Description = MakeCopy(CurPanelItem->Description);
 
 	if (CurPanelItem->Owner)
-	{
-		const auto RequiredSize = wcslen(CurPanelItem->Owner) + 1;
-		auto Buffer = std::make_unique<wchar_t[]>(RequiredSize);
-		std::wmemcpy(Buffer.get(), CurPanelItem->Owner, RequiredSize);
-		NewItem.Owner = Buffer.release();
-	}
+		NewItem.Owner = MakeCopy(CurPanelItem->Owner);
 
 	if (NewItem.CustomColumnNumber>0)
 	{
@@ -359,12 +294,7 @@ static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const
 		for (size_t ii = 0; ii < NewItem.CustomColumnNumber; ii++)
 		{
 			if (CurPanelItem->CustomColumnData[ii])
-			{
-				const auto RequiredSize = wcslen(CurPanelItem->CustomColumnData[ii]) + 1;
-				auto Buffer = std::make_unique<wchar_t[]>(RequiredSize);
-				std::wmemcpy(Buffer.get(), CurPanelItem->CustomColumnData[ii], RequiredSize);
-				CustomColumnData[ii] = Buffer.release();
-			}
+				CustomColumnData[ii] = MakeCopy(CurPanelItem->CustomColumnData[ii]);
 		}
 		NewItem.CustomColumnData = CustomColumnData.release();
 	}
@@ -373,91 +303,77 @@ static void PushPluginDirItem(std::vector<PluginPanelItem>& PluginDirList, const
 	NewItem.UserData.Data=nullptr;
 	NewItem.UserData.FreeData=nullptr;
 
+
+	if (NewItem.FileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+	{
+		++Data.DirCount;
+	}
+	else
+	{
+		++Data.FileCount;
+		Data.FileSize += NewItem.FileSize;
+		Data.AllocationSize += NewItem.AllocationSize? NewItem.AllocationSize : NewItem.FileSize;
+	}
+
 	PluginDirList.emplace_back(NewItem);
 }
 
-static void ScanPluginDir(plugin_panel* hDirListPlugin, OPERATION_MODES OpMode,string& strPluginSearchPath, std::vector<PluginPanelItem>& PluginDirList, bool& StopSearch)
+static void ScanPluginDir(plugin_panel* hDirListPlugin, OPERATION_MODES OpMode, string_view const BaseDir, string_view const PluginSearchPath, std::vector<PluginPanelItem>& PluginDirList, bool& StopSearch, BasicDirInfoData& Data, dirinfo_callback const Callback)
 {
-	PluginPanelItem *PanelData=nullptr;
-	size_t ItemCount=0;
-	int AbortOp=FALSE;
-	auto strDirName = strPluginSearchPath;
-	std::replace(ALL_RANGE(strDirName), L'\x1', L'\\');
-	DeleteEndSlash(strDirName);
-	TruncStr(strDirName,30);
-	inplace::fit_to_center(strDirName, 30);
+	Callback(BaseDir, Data.DirCount + Data.FileCount, Data.FileSize);
+
+	span<PluginPanelItem> PanelData;
 
 	if (CheckForEscSilent())
 	{
-		if (Global->Opt->Confirm.Esc) // Будет выдаваться диалог?
-			AbortOp=TRUE;
-
 		if (ConfirmAbortOp())
 			StopSearch = true;
 	}
 
-	FarGetPluginDirListMsg(strDirName,AbortOp?0:MSG_KEEPBACKGROUND);
-
-	if (StopSearch || !Global->CtrlObject->Plugins->GetFindData(hDirListPlugin,&PanelData,&ItemCount,OPM_FIND|OpMode))
+	if (StopSearch || !Global->CtrlObject->Plugins->GetFindData(hDirListPlugin, PanelData, OPM_FIND | OpMode))
 		return;
 
-	PluginDirList.reserve(PluginDirList.size() + ItemCount);
+	SCOPE_EXIT{ Global->CtrlObject->Plugins->FreeFindData(hDirListPlugin, PanelData, true); };
 
-	for (size_t i=0; i<ItemCount && !StopSearch; i++)
+	PluginDirList.reserve(PluginDirList.size() + PanelData.size());
+
+	for (const auto& i: PanelData)
 	{
-		PluginPanelItem *CurPanelItem=PanelData+i;
+		if (StopSearch)
+			return;
 
-		if (!(CurPanelItem->FileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-			PushPluginDirItem(PluginDirList, CurPanelItem, strPluginSearchPath);
+		if (!(i.FileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			PushPluginDirItem(PluginDirList, &i, PluginSearchPath, Data);
 	}
 
-	for (size_t i=0; i<ItemCount && !StopSearch; i++)
+	for (const auto& i: PanelData)
 	{
-		PluginPanelItem *CurPanelItem=PanelData+i;
+		if (StopSearch)
+			return;
 
-		if ((CurPanelItem->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-		        CurPanelItem->FileName != L"."s &&
-		        !TestParentFolderName(CurPanelItem->FileName))
+		if (!(i.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) || IsParentDirectory(i))
+			continue;
+
+		/* $ 30.11.2001 DJ
+				используем общую функцию для копирования FindData (не забываем
+				обработать PPIF_USERDATA)
+		*/
+		PushPluginDirItem(PluginDirList, &i, PluginSearchPath, Data);
+		const auto FileNameCopy = i.FileName;
+
+		if (Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin, FileNameCopy, OPM_FIND | OpMode, &i.UserData))
 		{
-			/* $ 30.11.2001 DJ
-					используем общую функцию для копирования FindData (не забываем
-					обработать PPIF_USERDATA)
-			*/
-			PushPluginDirItem(PluginDirList, CurPanelItem, strPluginSearchPath);
-			string strFileName = CurPanelItem->FileName;
+			ScanPluginDir(hDirListPlugin, OpMode, BaseDir, path::join(PluginSearchPath, i.FileName), PluginDirList, StopSearch, Data, Callback);
 
-			if (Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin,strFileName,OPM_FIND|OpMode,&CurPanelItem->UserData))
-			{
-				strPluginSearchPath += CurPanelItem->FileName;
-				strPluginSearchPath += L"\x1";
-				ScanPluginDir(hDirListPlugin, OpMode, strPluginSearchPath, PluginDirList, StopSearch);
-				size_t pos = strPluginSearchPath.rfind(L'\x1');
-				if (pos != string::npos)
-					strPluginSearchPath.resize(pos);
-
-				if ((pos = strPluginSearchPath.rfind(L'\x1'))!= string::npos)
-					strPluginSearchPath.resize(pos+1);
-				else
-					strPluginSearchPath.clear();
-
-				if (!Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin,L"..",OPM_FIND|OpMode))
-				{
-					StopSearch = true;
-					break;
-				}
-			}
+			if (!Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin, L".."s, OPM_FIND | OpMode))
+				return;
 		}
 	}
-
-	Global->CtrlObject->Plugins->FreeFindData(hDirListPlugin,PanelData,ItemCount,true);
 }
 
-bool GetPluginDirList(Plugin* PluginNumber, HANDLE hPlugin, const string& Dir, std::vector<PluginPanelItem>& Items)
+static bool GetPluginDirListImpl(Plugin* PluginNumber, HANDLE hPlugin, string_view const Dir, const UserDataItem* const UserData, std::vector<PluginPanelItem>& Items, BasicDirInfoData& Data, dirinfo_callback const Callback)
 {
 	Items.clear();
-
-	if (Dir == L"." || TestParentFolderName(Dir))
-		return false;
 
 	std::unique_ptr<plugin_panel> DirListPlugin;
 	plugin_panel* hDirListPlugin;
@@ -488,40 +404,32 @@ bool GetPluginDirList(Plugin* PluginNumber, HANDLE hPlugin, const string& Dir, s
 	bool StopSearch = false;
 
 	{
-		SCOPED_ACTION(SaveScreen);
-		SCOPED_ACTION(TPreRedrawFuncGuard)(std::make_unique<PluginDirInfoPreRedrawItem>());
+		SCOPED_ACTION(TPreRedrawFuncGuard)(std::make_unique<DirInfoPreRedrawItem>());
 		{
-			auto strDirName = Dir;
-			TruncStr(strDirName,30);
-			inplace::fit_to_center(strDirName, 30);
+			const auto strDirName = fit_to_center(truncate_left(Dir, 30), 30);
 			SetCursorType(false, 0);
-			FarGetPluginDirListMsg(strDirName,0);
 			PluginSearchMsgOut=FALSE;
 
 			OpenPanelInfo Info;
 			Global->CtrlObject->Plugins->GetOpenPanelInfo(hDirListPlugin,&Info);
-			string strPrevDir = NullToEmpty(Info.CurDir);
+			const string strPrevDir = NullToEmpty(Info.CurDir);
 
-			UserDataItem UserData = {};  // How to find the value of a variable?
-
-			if (Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin,Dir,OPM_SILENT|OpMode,&UserData))
+			if (Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin, string(Dir), OPM_SILENT | OpMode, UserData))
 			{
-				string strPluginSearchPath = Dir;
-				strPluginSearchPath += L"\x1";
-				ScanPluginDir(hDirListPlugin, OpMode,strPluginSearchPath, Items, StopSearch);
+				ScanPluginDir(hDirListPlugin, OpMode, Dir, Dir, Items, StopSearch, Data, Callback);
 
-				Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin,L"..",OPM_SILENT|OpMode);
+				Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin, L".."s, OPM_SILENT | OpMode);
+
 				OpenPanelInfo NewInfo;
 				Global->CtrlObject->Plugins->GetOpenPanelInfo(hDirListPlugin,&NewInfo);
 
 				if (!equal_icase(strPrevDir, NullToEmpty(NewInfo.CurDir)))
 				{
-					PluginPanelItem *PanelData=nullptr;
-					size_t ItemCount=0;
+					span<PluginPanelItem> PanelData;
 
-					if (Global->CtrlObject->Plugins->GetFindData(hDirListPlugin,&PanelData,&ItemCount,OPM_SILENT|OpMode))
+					if (Global->CtrlObject->Plugins->GetFindData(hDirListPlugin, PanelData, OPM_SILENT | OpMode))
 					{
-						Global->CtrlObject->Plugins->FreeFindData(hDirListPlugin,PanelData,ItemCount,true);
+						Global->CtrlObject->Plugins->FreeFindData(hDirListPlugin, PanelData, true);
 					}
 
 					Global->CtrlObject->Plugins->SetDirectory(hDirListPlugin,strPrevDir,OPM_SILENT|OpMode,&Info.UserData);
@@ -532,50 +440,37 @@ bool GetPluginDirList(Plugin* PluginNumber, HANDLE hPlugin, const string& Dir, s
 	return !StopSearch;
 }
 
+bool GetPluginDirList(Plugin* PluginNumber, HANDLE hPlugin, string_view const Dir, const UserDataItem* const UserData, std::vector<PluginPanelItem>& Items, dirinfo_callback const Callback)
+{
+	BasicDirInfoData Data{};
+	return GetPluginDirListImpl(PluginNumber, hPlugin, Dir, UserData, Items, Data, Callback);
+}
+
 void FreePluginDirList(HANDLE hPlugin, std::vector<PluginPanelItem>& Items)
 {
-	std::for_each(RANGE(Items, i)
+	for (const auto& i: Items)
 	{
-		if(i.UserData.FreeData)
-		{
-			FarPanelItemFreeInfo info={sizeof(FarPanelItemFreeInfo),hPlugin};
-			i.UserData.FreeData(i.UserData.Data,&info);
-		}
-		FreePluginPanelItem(i);
-		delete[] i.Description;
-		delete[] i.Owner;
-		DeleteRawArray(i.CustomColumnData, i.CustomColumnNumber);
-	});
+		FreePluginPanelItemNames(i);
+		FreePluginPanelItemUserData(hPlugin, i.UserData);
+		FreePluginPanelItemDescriptionOwnerAndColumns(i);
+	}
 
 	Items.clear();
 }
 
-bool GetPluginDirInfo(const plugin_panel* ph,const string& DirName,unsigned long& DirCount,
-                     unsigned long& FileCount,unsigned long long& FileSize,
-                     unsigned long long& CompressedFileSize)
+bool GetPluginDirInfo(
+	plugin_panel const* const hPlugin,
+	string_view const DirName,
+	UserDataItem const* const UserData,
+	BasicDirInfoData& Data,
+	dirinfo_callback const Callback
+)
 {
-	DirCount=FileCount=0;
-	FileSize=CompressedFileSize=0;
+	Data = {};
 
 	std::vector<PluginPanelItem> PanelItems;
-	if (!GetPluginDirList(ph->plugin(), ph->panel(), DirName, PanelItems)) //intptr_t - BUGBUG
-		return false;
+	// Must be cleared unconditionally: GetPluginDirList can fill it partially and return false
+	SCOPE_EXIT{ FreePluginDirList(hPlugin->panel(), PanelItems); };
 
-	std::for_each(ALL_CONST_RANGE(PanelItems), [&](const PluginPanelItem& i)
-	{
-		if (i.FileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-		{
-			DirCount++;
-		}
-		else
-		{
-			FileCount++;
-			FileSize += i.FileSize;
-			CompressedFileSize += i.AllocationSize? i.AllocationSize : i.FileSize;
-		}
-	});
-
-	FreePluginDirList(ph->panel(), PanelItems);
-
-	return true;
+	return GetPluginDirListImpl(hPlugin->plugin(), hPlugin->panel(), DirName, UserData, PanelItems, Data, Callback); //intptr_t - BUGBUG
 }

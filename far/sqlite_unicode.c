@@ -31,7 +31,17 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/compiler.hpp"
 #include "common/preprocessor.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 #define SQLITE_CORE
 #define SQLITE_ENABLE_UNICODE
@@ -41,7 +51,36 @@ WARNING_DISABLE_GCC("-Wcast-qual")
 WARNING_DISABLE_GCC("-Wsequence-point")
 WARNING_DISABLE_GCC("-Wsign-compare")
 
+WARNING_DISABLE_CLANG("-Weverything")
+
+#define sqlite3_value_text16 sqlite3_value_text16_hook
+#define sqlite3_value_bytes16 sqlite3_value_bytes16_hook
+#define sqlite3_result_text16 sqlite3_result_text16_hook
+
 #include "thirdparty/sqlite/sqlite3_unicode.c"
+
+
+const void* far_value_text16(void*);
+
+const void* sqlite3_value_text16_hook(sqlite3_value* Val)
+{
+	return far_value_text16(Val);
+}
+
+int far_value_bytes16(void*);
+
+int sqlite3_value_bytes16_hook(sqlite3_value* Val)
+{
+	return far_value_bytes16(Val);
+}
+
+void far_result_text16(void*, const void*, int);
+
+void sqlite3_result_text16_hook(sqlite3_context* Ctx, const void* Val, int Length, void (*Del)(void*))
+{
+	far_result_text16(Ctx, Val, Length);
+}
+
 
 const wchar_t SQLite_Unicode_Version[] = WIDE(SQLITE3_UNICODE_VERSION_STRING);
 

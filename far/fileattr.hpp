@@ -35,23 +35,27 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-enum SETATTR_RET_CODES
-{
-	SETATTR_RET_ERROR,
-	SETATTR_RET_OK,
-	SETATTR_RET_SKIP,
-	SETATTR_RET_SKIPALL,
-};
+// Internal:
 
-int ESetFileAttributes(const string& Name,DWORD Attr,int SkipMode=-1);
-int ESetFileCompression(const string& Name,int State,DWORD FileAttr,int SkipMode=-1);
-int ESetFileEncryption(const string& Name,bool State,DWORD FileAttr,int SkipMode=-1,int Silent=0);
-int ESetFileSparse(const string& Name,bool State,DWORD FileAttr,int SkipMode=-1);
-int ESetFileTime(const string& Name, const os::chrono::time_point* LastWriteTime, const os::chrono::time_point* CreationTime, const os::chrono::time_point* LastAccessTime, const os::chrono::time_point* ChangeTime, DWORD FileAttr, int SkipMode=-1);
-int ESetFileOwner(const string& Name, const string& Owner,int SkipMode=-1);
-int EDeleteReparsePoint(const string& Name, DWORD FileAttr, int SkipMode=-1);
+// Platform:
+#include "platform.chrono.hpp"
 
-void enum_attributes(const std::function<bool(DWORD, wchar_t)>& Pred);
+// Common:
+#include "common/function_ref.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+void ESetFileAttributes(string_view Name, DWORD Attributes, bool& SkipErrors);
+void ESetFileCompression(string_view Name, bool State, DWORD CurrentAttributes, bool& SkipErrors);
+void ESetFileEncryption(string_view Name, bool State, DWORD CurrentAttributes, bool& SkipErrors);
+void ESetFileSparse(string_view Name, bool State, DWORD CurrentAttributes, bool& SkipErrors);
+void ESetFileTime(string_view Name, const os::chrono::time_point* LastWriteTime, const os::chrono::time_point* CreationTime, const os::chrono::time_point* LastAccessTime, const os::chrono::time_point* ChangeTime, DWORD CurrentAttributes, bool& SkipErrors);
+void ESetFileOwner(string_view Name, const string& Owner, bool& SkipErrors);
+void EDeleteReparsePoint(string_view Name, DWORD CurrentAttributes, bool& SkipErrors);
+
+void enum_attributes(function_ref<bool(DWORD, wchar_t)> Pred);
 
 
 #endif // FILEATTR_HPP_1920BF1F_BD95_4A22_B3D9_33F2544760D1

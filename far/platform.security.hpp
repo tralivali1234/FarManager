@@ -34,35 +34,59 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/range.hpp"
+#include "common/smart_ptr.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 namespace os::security
 {
+	namespace detail
+	{
+		struct sid_deleter
+		{
+			void operator()(PSID Sid) const noexcept;
+		};
+	}
+
 	using sid_ptr = std::unique_ptr<std::remove_pointer_t<PSID>, detail::sid_deleter>;
 
+	[[nodiscard]]
 	sid_ptr make_sid(PSID_IDENTIFIER_AUTHORITY IdentifierAuthority, BYTE SubAuthorityCount, DWORD SubAuthority0 = 0, DWORD SubAuthority1 = 0, DWORD SubAuthority2 = 0, DWORD SubAuthority3 = 0, DWORD SubAuthority4 = 0, DWORD SubAuthority5 = 0, DWORD SubAuthority6 = 0, DWORD SubAuthority7 = 0);
 
+	[[nodiscard]]
 	bool is_admin();
 
 	class privilege
 	{
 	public:
 		NONCOPYABLE(privilege);
-		MOVABLE(privilege);
+		MOVE_CONSTRUCTIBLE(privilege);
 
-		privilege(const std::initializer_list<const wchar_t*>& Names): privilege(make_range(Names.begin(), Names.size())) {}
-		explicit privilege(const std::vector<const wchar_t*>& Names): privilege(make_range(Names.data(), Names.size())) {}
-		explicit privilege(const range<const wchar_t* const*>& Names);
+		privilege(const std::initializer_list<const wchar_t* const>& Names): privilege(span(Names)) {}
+		explicit privilege(span<const wchar_t* const> Names);
 		~privilege();
 
 		template<class... args>
+		[[nodiscard]]
 		static bool check(args&&... Args) { return check({ FWD(Args)... }); }
-		static bool check(const std::initializer_list<const wchar_t*>& Names) { return check(make_range(Names.begin(), Names.size())); }
-		static bool check(const std::vector<const wchar_t*>& Names) { return check(make_range(Names.data(), Names.size())); }
-		static bool check(const range<const wchar_t* const*>& Names);
+
+		[[nodiscard]]
+		static bool check(span<const wchar_t* const> Names);
 
 	private:
 		block_ptr<TOKEN_PRIVILEGES> m_SavedState;
 		bool m_Changed{};
 	};
+
+	using descriptor = block_ptr<SECURITY_DESCRIPTOR, 512>;
 }
 
 #endif // PLATFORM_SECURITY_HPP_08ED45C7_0FD0_43D5_8838_F9B6F8EFD31C

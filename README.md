@@ -1,7 +1,14 @@
+![Logo](https://raw.githubusercontent.com/FarGroup/FarManager/master/far/Far.ico)
+
 ### Far Manager
 https://www.farmanager.com
 
-[![AppVeyor](https://img.shields.io/appveyor/ci/FarGroup/farmanager.svg)](https://ci.appveyor.com/project/FarGroup/farmanager/history)
+| | AppVeyor | Travis | Azure |
+|-|-|-|-|
+| VS | [![AppVeyor](https://ci.appveyor.com/api/projects/status/6pca73evwo3oxvr9?svg=true)](https://ci.appveyor.com/project/FarGroup/farmanager/history) | [![Travis CI](https://img.shields.io/travis/FarGroup/FarManager.svg?logo=travis)](https://travis-ci.com/FarGroup/FarManager/builds) | [![Azure Pipelines](https://img.shields.io/azure-devops/build/FarGroup/66d0ddcf-a098-4b98-9470-1c90632c4ba3/1.svg?logo=azuredevops)](https://dev.azure.com/FarGroup/FarManager/_build?definitionId=1) |
+| GCC | [![AppVeyor](https://ci.appveyor.com/api/projects/status/k7ln3edp8nt5aoay?svg=true)](https://ci.appveyor.com/project/FarGroup/farmanager-5lhsj/history) | [![Travis CI](https://img.shields.io/travis/FarGroup/FarManager.svg?logo=travis)](https://travis-ci.com/FarGroup/FarManager/builds) | TBD |
+| Clang | [![AppVeyor](https://ci.appveyor.com/api/projects/status/pvwnc6gc5tjlpmti?svg=true)](https://ci.appveyor.com/project/FarGroup/farmanager-tgu1s/history) | [![Travis CI](https://img.shields.io/travis/FarGroup/FarManager.svg?logo=travis)](https://travis-ci.com/FarGroup/FarManager/builds) | TBD |
+
 
 ### Far Manager — what is it?
 Far Manager is a program for managing files and archives in Windows operating systems. Far Manager works in text mode and provides a simple and intuitive interface for performing most of the necessary actions:
@@ -17,6 +24,7 @@ The functionality of Far Manager is greatly extended by external DLL modules —
 
 
 #### Support forum
+https://enforum.farmanager.com/  
 https://forum.farmanager.com/
 
 #### Bug tracker

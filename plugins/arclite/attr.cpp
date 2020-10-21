@@ -1,4 +1,4 @@
-#include "msg.h"
+﻿#include "msg.h"
 #include "error.hpp"
 #include "utils.hpp"
 #include "farutils.hpp"
@@ -9,7 +9,7 @@
 #include "archive.hpp"
 #include "options.hpp"
 
-wstring uint_to_hex_str(unsigned __int64 val, unsigned num_digits = 0) {
+std::wstring uint_to_hex_str(UInt64 val, unsigned num_digits = 0) {
   wchar_t str[16];
   unsigned pos = 16;
   do {
@@ -25,73 +25,71 @@ wstring uint_to_hex_str(unsigned __int64 val, unsigned num_digits = 0) {
       str[pos] = L'0';
     }
   }
-  return wstring(str + pos, 16 - pos);
+  return std::wstring(str + pos, 16 - pos);
 }
 
-wstring format_str_prop(const PropVariant& prop) {
-  wstring str = prop.get_str();
+std::wstring format_str_prop(const PropVariant& prop) {
+  std::wstring str = prop.get_str();
   for (unsigned i = 0; i < str.size(); i++)
     if (str[i] == L'\r' || str[i] == L'\n')
       str[i] = L' ';
   return str;
 }
 
-wstring format_int_prop(const PropVariant& prop) {
+std::wstring format_int_prop(const PropVariant& prop) {
   wchar_t buf[32];
-  CHECK(_i64tow_s(prop.get_int(), buf, ARRAYSIZE(buf), 10) == 0);
-  return buf;
+  return std::wstring(_i64tow(prop.get_int(), buf, 10));
 }
 
-wstring format_uint_prop(const PropVariant& prop) {
+std::wstring format_uint_prop(const PropVariant& prop) {
   wchar_t buf[32];
-  CHECK(_ui64tow_s(prop.get_uint(), buf, ARRAYSIZE(buf), 10) == 0);
-  return buf;
+  return std::wstring(_ui64tow(prop.get_uint(), buf, 10));
 }
 
-wstring format_size_prop(const PropVariant& prop) {
+std::wstring format_size_prop(const PropVariant& prop) {
   if (!prop.is_uint())
-    return wstring();
-  wstring short_size = format_data_size(prop.get_uint(), get_size_suffixes());
-  wstring long_size = format_uint_prop(prop);
+    return std::wstring();
+  std::wstring short_size = format_data_size(prop.get_uint(), get_size_suffixes());
+  std::wstring long_size = format_uint_prop(prop);
   if (short_size == long_size)
     return short_size;
   else
     return short_size + L" = " + long_size;
 }
 
-wstring format_filetime_prop(const PropVariant& prop) {
+std::wstring format_filetime_prop(const PropVariant& prop) {
   if (!prop.is_filetime())
-    return wstring();
+    return std::wstring();
   FILETIME prop_file_time = prop.get_filetime();
   FILETIME local_file_time;
   if (!FileTimeToLocalFileTime(&prop_file_time, &local_file_time))
-    return wstring();
+    return std::wstring();
   SYSTEMTIME sys_time;
   if (!FileTimeToSystemTime(&local_file_time, &sys_time))
-    return wstring();
+    return std::wstring();
   wchar_t buf[64];
   if (GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &sys_time, nullptr, buf, ARRAYSIZE(buf)) == 0)
-    return wstring();
-  wstring date_time(buf);
+    return std::wstring();
+  std::wstring date_time(buf);
   if (GetTimeFormatW(LOCALE_USER_DEFAULT, 0, &sys_time, nullptr, buf, ARRAYSIZE(buf)) == 0)
-    return wstring();
+    return std::wstring();
   date_time = date_time + L" " + buf;
   return date_time;
 }
 
-wstring format_crc_prop(const PropVariant& prop) {
+std::wstring format_crc_prop(const PropVariant& prop) {
   if (!prop.is_uint())
-    return wstring();
+    return std::wstring();
   return uint_to_hex_str(prop.get_uint(), prop.get_int_size() * 2);
 }
 
 static const wchar_t kPosixTypes[16 + 1] = L"0pc3d5b7-9lBsDEF";
 #define ATTR_CHAR(a, n, c) (((a) & (1 << (n))) ? c : L'-')
 
-wstring format_posix_attrib_prop(const PropVariant& prop)
+std::wstring format_posix_attrib_prop(const PropVariant& prop)
 {
   if (!prop.is_uint())
-    return wstring();
+    return std::wstring();
 
   unsigned val = static_cast<unsigned>(prop.get_uint());
   wchar_t attr[10];
@@ -108,7 +106,7 @@ wstring format_posix_attrib_prop(const PropVariant& prop)
   if ((val & 0x200) != 0) attr[9] = ((val & (1 << 0)) ? L't' : L'T');
 
   val &= ~(unsigned)0xFFFF;
-  return val ? wstring(attr, 10) + L' ' + uint_to_hex_str(val, 8) : wstring(attr, 10);
+  return val ? std::wstring(attr, 10) + L' ' + uint_to_hex_str(val, 8) : std::wstring(attr, 10);
 }
 
 static const unsigned kNumWinAtrribFlags = 21;
@@ -140,24 +138,12 @@ static const wchar_t g_WinAttribChars[kNumWinAtrribFlags + 1] = L"RHS8DAdNTsLCOI
 22 RECALL_ON_DATA_ACCESS
 */
 
-wstring format_attrib_prop(const PropVariant& prop)
+std::wstring format_attrib_prop(const PropVariant& prop)
 {
   if (!prop.is_uint())
-    return wstring();
+    return std::wstring();
 
-  // some programs store posix attributes in high 16 bits.
-  // p7zip - stores additional 0x8000 flag marker.
-  // macos - stores additional 0x4000 flag marker.
-  // info-zip - no additional marker.
-
-  unsigned val = static_cast<unsigned>(prop.get_uint());
-  bool isPosix = ((val & 0xF0000000) != 0);
-
-  unsigned posix = 0;
-  if (isPosix) {
-    posix = val >> 16;
-    val &= (unsigned)0x3FFF;
-  }
+  auto [posix, val] = get_posix_and_nt_attributes(static_cast<DWORD>(prop.get_uint()));
 
   wchar_t attr[kNumWinAtrribFlags];
   size_t na = 0;
@@ -172,7 +158,7 @@ wstring format_attrib_prop(const PropVariant& prop)
       }
     }
   }
-  auto res = wstring(attr, na);
+  auto res = std::wstring(attr, na);
 
   if (val != 0) {
     if (na)
@@ -180,7 +166,7 @@ wstring format_attrib_prop(const PropVariant& prop)
     res += uint_to_hex_str(val, 8);
   }
 
-  if (isPosix) {
+  if (posix) {
     if (!res.empty())
       res += L' ';
     PropVariant p((UInt32)posix);
@@ -190,7 +176,7 @@ wstring format_attrib_prop(const PropVariant& prop)
   return res;
 }
 
-typedef wstring (*PropToString)(const PropVariant& var);
+typedef std::wstring (*PropToString)(const PropVariant& var);
 
 struct PropInfo {
   PROPID prop_id;
@@ -398,9 +384,9 @@ void Archive::load_arc_attr() {
 
   // compression ratio
   bool total_size_defined = true;
-  unsigned __int64 total_size = 0;
+  UInt64 total_size = 0;
   bool total_packed_size_defined = true;
-  unsigned __int64 total_packed_size = 0;
+  UInt64 total_packed_size = 0;
   unsigned file_count = 0;
   PropVariant prop;
   for (UInt32 file_id = 0; file_id < num_indices && total_size_defined; file_id++) {
@@ -420,13 +406,7 @@ void Archive::load_arc_attr() {
   }
   if (total_size_defined) {
     attr.name = Far::get_msg(MSG_PROPERTY_COMPRESSION_RATIO);
-    unsigned __int64 arc_size = arc_info.size();
-    for_each(volume_names.begin(), volume_names.end(), [&] (const wstring& volume_name) {
-      wstring volume_path = add_trailing_slash(arc_dir()) + volume_name;
-      FindData find_data;
-      if (File::get_find_data_nt(volume_path, find_data))
-        arc_size += find_data.size();
-    });
+    auto arc_size = archive_filesize();
     unsigned ratio = total_size ? al_round(static_cast<double>(arc_size) / total_size * 100) : 100;
     if (ratio > 100)
       ratio = 100;
@@ -472,14 +452,14 @@ void Archive::load_update_props() {
 
   solid = in_arc->GetArchiveProperty(kpidSolid, prop.ref()) == S_OK && prop.is_bool() && prop.get_bool();
 
-  level = -1;
+  level = (unsigned)-1;
   method.clear();
   if (in_arc->GetArchiveProperty(kpidMethod, prop.ref()) == S_OK && prop.is_str()) {
-    list<wstring> m_list = split(prop.get_str(), L' ');
+    std::list<std::wstring> m_list = split(prop.get_str(), L' ');
 
     static const wchar_t *known_methods[] = { c_method_lzma, c_method_lzma2, c_method_ppmd };
 
-    for (list<wstring>::const_iterator m_str = m_list.begin(); m_str != m_list.end(); m_str++) {
+    for (std::list<std::wstring>::const_iterator m_str = m_list.begin(); m_str != m_list.end(); m_str++) {
       if (_wcsicmp(m_str->c_str(), c_method_copy) == 0) {
         level = 0;
         method = c_method_lzma;
@@ -490,7 +470,7 @@ void Archive::load_update_props() {
         { method = known; break; }
       }
       for (const auto known : g_options.codecs) {
-        if (_wcsicmp(m_str->data(), known.name.data()) == 0)
+        if (_wcsicmp(m_str->c_str(), known.name.c_str()) == 0)
         { method = known.name; break; }
       }
       if (!method.empty())
@@ -498,7 +478,7 @@ void Archive::load_update_props() {
     }
   }
 
-  if (level == -1)
+  if (level == (unsigned)-1)
     level = 7; // maximum
   if (method.empty())
     method = c_method_lzma;

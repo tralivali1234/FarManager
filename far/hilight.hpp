@@ -35,6 +35,19 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+#include "plugin.hpp"
+
+// Platform:
+#include "platform.chrono.hpp"
+
+// Common:
+#include "common/noncopyable.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 class FileFilterParams;
 class FileList;
 class FileListItem;
@@ -61,8 +74,8 @@ namespace highlight
 	private:
 		struct colors
 		{
-			FarColor FileColor;
-			FarColor MarkColor;
+			FarColor FileColor{};
+			FarColor MarkColor{};
 
 			bool operator ==(const colors& rhs) const
 			{
@@ -72,8 +85,8 @@ namespace highlight
 
 		struct mark
 		{
-			wchar_t Char;
-			bool Transparent;
+			wchar_t Char{};
+			bool Transparent{};
 
 			bool operator ==(const mark& rhs) const
 			{
@@ -99,7 +112,7 @@ namespace highlight
 
 		void UpdateCurrentTime();
 		const element* GetHiColor(const FileListItem& Item, const FileList* Owner, bool UseAttrHighlighting = false);
-		int GetGroup(const FileListItem *fli, const FileList* Owner);
+		int GetGroup(const FileListItem& Object, const FileList* Owner);
 		void HiEdit(int MenuPos);
 		void UpdateHighlighting(bool RefreshMasks = false);
 		void Save(bool always);
@@ -107,10 +120,10 @@ namespace highlight
 		static void ApplyFinalColor(element::colors_array::value_type& Colors, size_t PaletteIndex);
 
 	private:
-		void InitHighlightFiles(const HierarchicalConfig* cfg);
+		void InitHighlightFiles(/*const*/ HierarchicalConfig& cfg);
 		void ClearData();
 		int  MenuPosToRealPos(int MenuPos, int*& Count, bool Insert = false);
-		void FillMenu(VMenu2 *HiMenu, int MenuPos);
+		void FillMenu(VMenu2 *HiMenu, int MenuPos) const;
 		void ProcessGroups();
 
 		struct element_hash
@@ -121,7 +134,7 @@ namespace highlight
 		std::unordered_set<element, element_hash> Colors;
 		std::vector<FileFilterParams> HiData;
 
-		int FirstCount, UpperCount, LowerCount, LastCount;
+		int FirstCount{}, UpperCount{}, LowerCount{}, LastCount{};
 		os::chrono::time_point CurrentTime;
 		bool m_Changed{};
 	};

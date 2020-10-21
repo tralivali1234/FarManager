@@ -30,14 +30,25 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "filesystemwatcher.hpp"
+
+// Internal:
 #include "flink.hpp"
 #include "elevation.hpp"
-#include "farexcpt.hpp"
+#include "exception_handler.hpp"
 #include "pathmix.hpp"
+#include "exception.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/string_utils.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 FileSystemWatcher::FileSystemWatcher():
 	m_WatchSubtree(false),
@@ -58,7 +69,7 @@ FileSystemWatcher::~FileSystemWatcher()
 	}
 }
 
-void FileSystemWatcher::Set(const string& Directory, bool WatchSubtree)
+void FileSystemWatcher::Set(string_view const Directory, bool const WatchSubtree)
 {
 	Release();
 
@@ -68,7 +79,7 @@ void FileSystemWatcher::Set(const string& Directory, bool WatchSubtree)
 	if (os::fs::GetFileTimeSimple(Directory, nullptr, nullptr, &m_PreviousLastWriteTime, nullptr))
 		m_CurrentLastWriteTime = m_PreviousLastWriteTime;
 
-	m_IsFatFilesystem = {};
+	m_IsFatFilesystem.reset();
 }
 
 void FileSystemWatcher::Watch(bool got_focus, bool check_time)
@@ -78,24 +89,24 @@ void FileSystemWatcher::Watch(bool got_focus, bool check_time)
 	SCOPED_ACTION(elevation::suppress);
 
 	if(!m_RegistrationThread)
-		m_RegistrationThread = os::thread(&os::thread::join, &FileSystemWatcher::Register, this);
+		m_RegistrationThread = os::thread(os::thread::mode::join, &FileSystemWatcher::Register, this);
 
 	if (got_focus)
 	{
-		if (!m_IsFatFilesystem.second)
+		if (!m_IsFatFilesystem.has_value())
 		{
+			m_IsFatFilesystem = false;
+
 			const auto strRoot = GetPathRoot(m_Directory);
 			if (!strRoot.empty())
 			{
 				string strFileSystem;
 				if (os::fs::GetVolumeInformation(strRoot, nullptr, nullptr, nullptr, nullptr, &strFileSystem))
-					m_IsFatFilesystem.first = starts_with(strFileSystem, L"FAT"_sv);
+					m_IsFatFilesystem = starts_with(strFileSystem, L"FAT"sv);
 			}
-
-			m_IsFatFilesystem.second = true;
 		}
 
-		if (m_IsFatFilesystem.first)
+		if (*m_IsFatFilesystem)
 		{
 			// emulate FAT folder time change
 			// otherwise changes missed (FAT folder time is NOT modified)
@@ -122,11 +133,11 @@ void FileSystemWatcher::Release()
 	if (m_RegistrationThread)
 	{
 		m_Cancelled.set();
-		m_RegistrationThread.reset();
+		m_RegistrationThread = {};
 	}
 
 	m_Cancelled.reset();
-	m_Notification.reset();
+	m_Notification = {};
 	m_PreviousLastWriteTime = m_CurrentLastWriteTime;
 }
 
@@ -134,14 +145,15 @@ bool FileSystemWatcher::Signaled() const
 {
 	PropagateException();
 
-	return m_Notification.is_signaled() || m_PreviousLastWriteTime != m_CurrentLastWriteTime;
+	return (m_Notification && m_Notification.is_signaled()) || m_PreviousLastWriteTime != m_CurrentLastWriteTime;
 }
 
 void FileSystemWatcher::Register()
 {
-	seh_invoke_thread(m_ExceptionPtr, [this]
+	seh_try_thread(m_ExceptionPtr, [this]
 	{
-		try
+		cpp_try(
+		[&]
 		{
 			m_Notification = os::fs::FindFirstChangeNotification(m_Directory, m_WatchSubtree,
 				FILE_NOTIFY_CHANGE_FILE_NAME |
@@ -153,14 +165,13 @@ void FileSystemWatcher::Register()
 			if (!m_Notification)
 				return;
 
-			os::multi_waiter waiter;
-			waiter.add(m_Notification.native_handle());
-			waiter.add(m_Cancelled);
-			waiter.wait(os::multi_waiter::mode::any);
-			return;
-		}
-		CATCH_AND_SAVE_EXCEPTION_TO(m_ExceptionPtr)
-		m_IsRegularException = true;
+			(void)os::handle::wait_any({ m_Notification.native_handle(), m_Cancelled.native_handle() });
+		},
+		[&]
+		{
+			SAVE_EXCEPTION_TO(m_ExceptionPtr);
+			m_IsRegularException = true;
+		});
 	});
 }
 
@@ -171,5 +182,5 @@ void FileSystemWatcher::PropagateException() const
 		// You're someone else's problem
 		m_RegistrationThread.detach();
 	}
-	RethrowIfNeeded(m_ExceptionPtr);
+	rethrow_if(m_ExceptionPtr);
 }

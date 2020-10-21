@@ -33,15 +33,70 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-namespace locale
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/nifty_counter.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct locale_names
 {
-	int GetDateFormat();
-	wchar_t GetDateSeparator();
-	wchar_t GetTimeSeparator();
-	wchar_t GetDecimalSeparator();
-	wchar_t GetThousandSeparator();
-	string GetValue(LCID lcid, LCTYPE id);
-	string GetTimeFormat();
+	struct name
+	{
+		string Full;
+		string Short;
+	};
+
+	name Months[12];
+	name Weekdays[7];
+};
+
+enum class date_type
+{
+	mdy,
+	dmy,
+	ymd
+};
+
+namespace detail
+{
+	class locale
+	{
+	public:
+		locale() = default;
+
+		date_type date_format() const;
+		int digits_grouping() const;
+		wchar_t date_separator() const;
+		wchar_t time_separator() const;
+		wchar_t decimal_separator() const;
+		wchar_t thousand_separator() const;
+		const locale_names& LocalNames() const;
+		const locale_names& EnglishNames() const;
+		const locale_names& Names(bool Local) const;
+		void invalidate();
+
+	private:
+		void refresh() const;
+
+		mutable date_type m_DateFormat{ date_type::mdy };
+		mutable int m_DigitsGrouping{};
+		mutable wchar_t m_DateSeparator{};
+		mutable wchar_t m_TimeSeparator{};
+		mutable wchar_t m_DecimalSeparator{};
+		mutable wchar_t m_ThousandSeparator{};
+		mutable locale_names m_LocalNames;
+		mutable locale_names m_EnglishNames;
+
+		mutable bool m_Valid{};
+	};
 }
+
+NIFTY_DECLARE(detail::locale, locale);
 
 #endif // LOCALE_HPP_C358EF79_F894_425E_B689_C4F4131DBE76

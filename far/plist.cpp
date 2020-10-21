@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "plist.hpp"
+
+// Internal:
 #include "keys.hpp"
 #include "help.hpp"
 #include "vmenu.hpp"
@@ -43,8 +43,22 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "message.hpp"
 #include "interf.hpp"
 #include "imports.hpp"
-#include "strmix.hpp"
+#include "string_sort.hpp"
 #include "exception.hpp"
+#include "exception_handler.hpp"
+#include "console.hpp"
+#include "keyboard.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/scope_exit.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 struct menu_data
 {
@@ -55,47 +69,92 @@ struct menu_data
 
 struct ProcInfo
 {
-	VMenu2 *procList;
-	bool ShowImage;
+	std::vector<std::pair<HWND, DWORD>> Windows;
 	std::exception_ptr ExceptionPtr;
 };
 
-static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM Param)
+// https://blogs.msdn.microsoft.com/oldnewthing/20071008-00/?p=24863/
+static bool is_alttab_window(HWND const Window)
 {
-	const auto pi = reinterpret_cast<ProcInfo*>(Param);
+	if (!IsWindowVisible(Window))
+		return false;
 
-	try
+	auto Try = GetAncestor(Window, GA_ROOTOWNER);
+	HWND Walk = nullptr;
+	while (Try != Walk)
 	{
-		if (IsWindowVisible(hwnd) || (IsIconic(hwnd) && !(GetWindowLongPtr(hwnd, GWL_STYLE) & WS_DISABLED)))
-		{
-			DWORD ProcID;
-			GetWindowThreadProcessId(hwnd, &ProcID);
-			string WindowTitle, MenuItem;
-			if (os::GetWindowText(hwnd, WindowTitle) && !WindowTitle.empty())
-			{
-				if (pi->ShowImage)
-				{
-					if (const auto Process = os::handle(OpenProcess(imports::instance().QueryFullProcessImageNameW? PROCESS_QUERY_LIMITED_INFORMATION : PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, ProcID)))
-					{
-						os::fs::GetModuleFileName(Process.native_handle(), nullptr, MenuItem);
-					}
-				}
-				else
-				{
-					MenuItem = WindowTitle;
-				}
-
-				MenuItemEx NewItem(format(L"{0:9} {1} {2}", ProcID, BoxSymbols[BS_V1], MenuItem));
-				NewItem.UserData = menu_data{ WindowTitle, ProcID, hwnd };
-				pi->procList->AddItem(NewItem);
-			}
-		}
-
-		return TRUE;
+		Walk = Try;
+		Try = GetLastActivePopup(Walk);
+		if (IsWindowVisible(Try))
+			break;
 	}
-	CATCH_AND_SAVE_EXCEPTION_TO(pi->ExceptionPtr)
+	if (Walk != Window)
+		return false;
 
-	return FALSE;
+	// Tool windows should not be displayed either, these do not appear in the task bar
+	if (GetWindowLongPtr(Window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+		return false;
+
+	if (IsWindows8OrGreater())
+	{
+		int Cloaked = 0;
+		if (SUCCEEDED(imports.DwmGetWindowAttribute(Window, DWMWA_CLOAKED, &Cloaked, sizeof(Cloaked))) && Cloaked)
+			return false;
+	}
+
+	return true;
+}
+
+static BOOL CALLBACK EnumWindowsProc(HWND const Window, LPARAM const Param)
+{
+	auto& Info = *reinterpret_cast<ProcInfo*>(Param);
+
+	return cpp_try(
+	[&]
+	{
+		if (!is_alttab_window(Window))
+			return true;
+
+		DWORD Pid;
+		GetWindowThreadProcessId(Window, &Pid);
+
+		Info.Windows.emplace_back(Window, Pid);
+		return true;
+	},
+	[&]
+	{
+		SAVE_EXCEPTION_TO(Info.ExceptionPtr);
+		return false;
+	});
+}
+
+static void AddMenuItem(HWND const Window, DWORD const Pid, size_t const PidWidth, bool const ShowImage, vmenu2_ptr const& Menu)
+{
+	string WindowTitle;
+	os::GetWindowText(Window, WindowTitle);
+
+	string MenuItem;
+
+	if (ShowImage)
+	{
+		if (const auto Process = os::handle(OpenProcess(imports.QueryFullProcessImageNameW? PROCESS_QUERY_LIMITED_INFORMATION : PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, Pid)))
+			// BUGBUG check result
+			(void)os::fs::GetModuleFileName(Process.native_handle(), nullptr, MenuItem);
+
+		if (MenuItem.empty())
+			MenuItem = L"???"sv;
+	}
+	else
+	{
+		MenuItem = WindowTitle;
+	}
+
+	const auto Self = Pid == GetCurrentProcessId() || Window == console.GetWindow();
+
+	MenuItemEx NewItem(format(FSTR(L"{0:{1}} {2} {3}"), Pid, PidWidth, BoxSymbols[BS_V1], MenuItem), Self? MIF_CHECKED : MIF_NONE);
+	// for sorting
+	NewItem.ComplexUserData = menu_data{ WindowTitle, Pid, Window };
+	Menu->AddItem(NewItem);
 }
 
 void ShowProcessList()
@@ -104,129 +163,136 @@ void ShowProcessList()
 	if (Active)
 		return;
 	Active = true;
+	SCOPE_EXIT{ Active = false; };
 
-	const auto ProcList = VMenu2::create(msg(lng::MProcessListTitle), nullptr, 0, ScrY - 4);
-	ProcList->SetMenuFlags(VMENU_WRAPMODE);
-	ProcList->SetPosition(-1,-1,0,0);
+	const auto ProcList = VMenu2::create(msg(lng::MProcessListTitle), {}, ScrY - 4);
+	ProcList->SetMenuFlags(VMENU_WRAPMODE | VMENU_SHOWAMPERSAND);
+	ProcList->SetPosition({ -1, -1, 0, 0 });
 	bool ShowImage = false;
 
-	const auto& FillProcList = [&]
-	{
-		ProcList->clear();
+	ProcInfo Info;
+	Info.Windows.reserve(128);
 
-		ProcInfo pi = { ProcList.get(), ShowImage };
-		if (!EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&pi)))
+	const auto FillProcList = [&]
+	{
+		SCOPED_ACTION(Dialog::suppress_redraw)(ProcList.get());
+
+		ProcList->clear();
+		Info.Windows.clear();
+
+		if (!EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&Info)))
 		{
-			RethrowIfNeeded(pi.ExceptionPtr);
+			rethrow_if(Info.ExceptionPtr);
 			return false;
 		}
 
-		ProcList->SortItems([](const MenuItemEx& a, const MenuItemEx& b, SortItemParam& p)
+		const auto MaxPid = std::max_element(ALL_CONST_RANGE(Info.Windows), [](const auto& a, const auto& b) { return a.second < b.second; })->second;
+		const auto PidWidth = static_cast<size_t>(std::log10(MaxPid)) + 1;
+
+		for (const auto& [Window, Pid]: Info.Windows)
 		{
-			return StrCmp(any_cast<menu_data>(a.UserData).Title, any_cast<menu_data>(b.UserData).Title) < 0;
+			AddMenuItem(Window, Pid, PidWidth, ShowImage, ProcList);
+		}
+
+		ProcList->SortItems([](const MenuItemEx& a, const MenuItemEx& b, SortItemParam&)
+		{
+			return string_sort::less(std::any_cast<const menu_data&>(a.ComplexUserData).Title, std::any_cast<const menu_data&>(b.ComplexUserData).Title);
 		});
 
 		return true;
 	};
 
-	if (FillProcList())
+	if (!FillProcList())
+		return;
+
+	ProcList->AssignHighlights();
+	ProcList->SetBottomTitle(KeysToLocalizedText(KEY_DEL, KEY_F2, KEY_CTRLR));
+
+	ProcList->Run([&](const Manager::Key& RawKey)
 	{
-		ProcList->AssignHighlights(FALSE);
-		ProcList->SetBottomTitle(msg(lng::MProcessListBottom));
-
-		ProcList->Run([&](const Manager::Key& RawKey)
+		const auto Key=RawKey();
+		int KeyProcessed = 1;
+		switch (Key)
 		{
-			const auto Key=RawKey();
-			int KeyProcessed = 1;
-			switch (Key)
+			case KEY_F1:
+				help::show(L"TaskList"sv);
+				break;
+
+			case KEY_NUMDEL:
+			case KEY_DEL:
 			{
-				case KEY_F1:
+				if (const auto MenuData = ProcList->GetComplexUserDataPtr<menu_data>())
 				{
-					Help::create(L"TaskList");
-					break;
-				}
-
-				case KEY_NUMDEL:
-				case KEY_DEL:
-				{
-					if (const auto MenuData = ProcList->GetUserDataPtr<menu_data>())
-					{
-						if (Message(MSG_WARNING,
-							msg(lng::MKillProcessTitle),
-							{
-								msg(lng::MAskKillProcess),
-								MenuData->Title,
-								msg(lng::MKillProcessWarning)
-							},
-							{ lng::MKillProcessKill, lng::MCancel }) == Message::first_button)
+					if (Message(MSG_WARNING,
+						msg(lng::MKillProcessTitle),
 						{
-							const auto Process = os::handle(OpenProcess(PROCESS_TERMINATE, FALSE, MenuData->Pid));
-							if (!Process || !TerminateProcess(Process.native_handle(), 0xFFFFFFFF))
-							{
-								const auto ErrorState = error_state::fetch();
+							msg(lng::MAskKillProcess),
+							MenuData->Title,
+							msg(lng::MKillProcessWarning)
+						},
+						{ lng::MKillProcessKill, lng::MCancel }) == Message::first_button)
+					{
+						const os::handle Process(OpenProcess(PROCESS_TERMINATE, FALSE, MenuData->Pid));
+						if (!Process || !TerminateProcess(Process.native_handle(), ERROR_PROCESS_ABORTED))
+						{
+							const auto ErrorState = error_state::fetch();
 
-								Message(MSG_WARNING, ErrorState,
-									msg(lng::MKillProcessTitle),
-									{
-										msg(lng::MCannotKillProcess)
-									},
-									{ lng::MOk });
-							}
+							Message(MSG_WARNING, ErrorState,
+								msg(lng::MKillProcessTitle),
+								{
+									msg(lng::MCannotKillProcess)
+								},
+								{ lng::MOk });
 						}
 					}
 				}
-				// fallthrough
-				case KEY_CTRLR:
-				case KEY_RCTRLR:
-				{
-					if (!FillProcList())
-						ProcList->Close(-1);
-					break;
-				}
-				case KEY_F2:
-				{
-					// TODO: change titles, don't enumerate again
-					ShowImage = !ShowImage;
-					int SelectPos=ProcList->GetSelectPos();
-					if (!FillProcList())
-					{
-						ProcList->Close(-1);
-					}
-					else
-					{
-						ProcList->SetSelectPos(SelectPos);
-					}
-					break;
-				}
-
-
-				default:
-					KeyProcessed = 0;
 			}
-			return KeyProcessed;
-		});
-
-		if (ProcList->GetExitCode()>=0)
-		{
-			if (const auto MenuData = ProcList->GetUserDataPtr<menu_data>())
+			[[fallthrough]];
+			case KEY_CTRLR:
+			case KEY_RCTRLR:
 			{
-				DWORD dwMs;
-				// Remember the current value.
-				auto bSPI = SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &dwMs, 0) != FALSE;
-
-				if (bSPI) // Reset foreground lock timeout
-					bSPI = SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, nullptr, 0) != FALSE;
-
-				SetForegroundWindow(MenuData->Hwnd);
-
-				if (bSPI) // Restore old value
-					SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, ToPtr(dwMs), 0);
-
-				WINDOWPLACEMENT wp = { sizeof(wp) };
-				if (!GetWindowPlacement(MenuData->Hwnd, &wp) || wp.showCmd != SW_SHOWMAXIMIZED)
-					ShowWindowAsync(MenuData->Hwnd, SW_RESTORE);
+				if (!FillProcList())
+					ProcList->Close(-1);
+				break;
 			}
+
+			case KEY_F2:
+			{
+				// TODO: change titles, don't enumerate again
+				ShowImage = !ShowImage;
+				const auto SelectPos = ProcList->GetSelectPos();
+				if (!FillProcList())
+				{
+					ProcList->Close(-1);
+				}
+				else
+				{
+					ProcList->SetSelectPos(SelectPos);
+				}
+				break;
+			}
+
+
+			default:
+				KeyProcessed = 0;
 		}
-	}
-	Active = false;
+		return KeyProcessed;
+	});
+
+	if (ProcList->GetExitCode() < 0)
+		return;
+
+	const auto MenuData = ProcList->GetComplexUserDataPtr<menu_data>();
+	if (!MenuData)
+		return;
+
+	SwitchToWindow(MenuData->Hwnd);
+}
+
+void SwitchToWindow(HWND Window)
+{
+	SetForegroundWindow(Window);
+
+	if (IsIconic(Window))
+		ShowWindowAsync(Window, SW_RESTORE);
 }

@@ -35,6 +35,20 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/noncopyable.hpp"
+#include "common/range.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
+struct FarColor;
+
 class palette: noncopyable
 {
 public:
@@ -43,15 +57,20 @@ public:
 	void Save(bool always);
 	void ResetToDefault();
 	void ResetToBlack();
-	void Set(size_t StartOffset, FarColor* Value, size_t Count);
-	void CopyTo(FarColor* Destination, size_t Size) const;
+	void Set(size_t StartOffset, span<FarColor> Values);
+	void CopyTo(span<FarColor> Destination) const;
 	const FarColor& operator[](size_t Index) const {return CurrentPalette[Index];}
 	size_t size() const {return CurrentPalette.size();}
+
+	using custom_colors = std::array<COLORREF, 16>;
+	custom_colors GetCustomColors() const;
+	void SetCustomColors(const custom_colors& Colors);
 
 private:
 	void Reset(bool Black);
 	std::vector<FarColor> CurrentPalette;
-	bool PaletteChanged;
+	bool PaletteChanged{};
+	bool CustomColorsChanged{};
 };
 
 #endif // PALETTE_HPP_8CFE8272_39B6_4198_9046_E94FEAD9832C

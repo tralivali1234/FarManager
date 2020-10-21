@@ -35,8 +35,19 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "datetime.hpp"
+#include "plugin.hpp"
+
+// Platform:
 #include "platform.concurrency.hpp"
+#include "platform.fs.hpp"
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 enum FINDAREA
 {
@@ -47,12 +58,13 @@ enum FINDAREA
 	FINDAREA_FROM_CURRENT,
 	FINDAREA_CURRENT_ONLY,
 	FINDAREA_SELECTED,
+
+	FINDAREA_COUNT
 };
 
 class Dialog;
 class plugin_panel;
 struct THREADPARAM;
-class IndeterminateTaskbar;
 class InterThreadData;
 class filemasks;
 class FileFilter;
@@ -78,7 +90,7 @@ public:
 	const std::unique_ptr<FileFilter>& GetFilter() const { return Filter; }
 	static bool IsWordDiv(wchar_t symbol);
 	// BUGBUG
-	void AddMenuRecord(Dialog* Dlg, const string& FullName, const os::fs::find_data& FindData, void* Data, FARPANELITEMFREECALLBACK FreeData, ArcListItem* Arc);
+	void AddMenuRecord(Dialog* Dlg, string_view FullName, const os::fs::find_data& FindData, void* Data, FARPANELITEMFREECALLBACK FreeData, ArcListItem* Arc);
 
 	enum type2
 	{
@@ -89,7 +101,7 @@ public:
 
 	struct AddMenuData
 	{
-		type2 m_Type{};
+		type2 m_Type{ data };
 		FindFiles* m_Owner{};
 		Dialog* m_Dlg{};
 		string m_FullName;
@@ -100,10 +112,9 @@ public:
 
 		AddMenuData() = default;
 		explicit AddMenuData(type2 Type): m_Type(Type) {}
-		AddMenuData(string FullName, os::fs::find_data FindData, void* Data, FARPANELITEMFREECALLBACK FreeData, ArcListItem* Arc):
-			m_Type(data),
-			m_FullName(std::move(FullName)),
-			m_FindData(std::move(FindData)),
+		AddMenuData(string_view FullName, const os::fs::find_data& FindData, void* Data, FARPANELITEMFREECALLBACK FreeData, ArcListItem* Arc):
+			m_FullName(FullName),
+			m_FindData(FindData),
 			m_Data(Data),
 			m_FreeData(FreeData),
 			m_Arc(Arc)
@@ -117,18 +128,19 @@ public:
 	// BUGBUG
 	void Lock() { PluginCS.lock(); }
 	void Unlock() { PluginCS.unlock(); }
+	[[nodiscard]]
 	auto ScopedLock() { return make_raii_wrapper(this, &FindFiles::Lock, &FindFiles::Unlock); }
 
 private:
 	string &PrepareDriveNameStr(string &strSearchFromRoot) const;
-	void AdvancedDialog();
+	void AdvancedDialog() const;
 	intptr_t MainDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
 	intptr_t FindDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
-	void OpenFile(string strSearchFileName, int key, const FindListItem* FindItem, Dialog* Dlg) const;
+	void OpenFile(const string& strSearchFileName, int OpenKey, const FindListItem* FindItem, Dialog* Dlg) const;
 	bool FindFilesProcess();
 	void ProcessMessage(const AddMenuData& Data);
-	void SetPluginDirectory(const string_view& DirName, plugin_panel* hPlugin, bool UpdatePanel = false, UserDataItem *UserData = nullptr);
-	bool GetPluginFile(struct ArcListItem* ArcItem, const os::fs::find_data& FindData, const string& DestPath, string &strResultName, UserDataItem *UserData);
+	void SetPluginDirectory(string_view DirName, const plugin_panel* hPlugin, bool UpdatePanel, const UserDataItem *UserData);
+	bool GetPluginFile(struct ArcListItem const* ArcItem, const os::fs::find_data& FindData, const string& DestPath, string &strResultName, const UserDataItem* UserData);
 
 	static intptr_t AdvancedDlgProc(Dialog* Dlg, intptr_t Msg, intptr_t Param1, void* Param2);
 
@@ -153,9 +165,8 @@ private:
 	string strFindStr;
 	std::unique_ptr<filemasks> FileMaskForFindFile;
 	std::unique_ptr<FileFilter> Filter;
-	std::unique_ptr<IndeterminateTaskbar> TB;
 
-	std::list<delayed_deleter> m_DelayedDeleters;
+	std::unique_ptr<delayed_deleter> m_DelayedDeleter;
 
 	int m_FileCount{};
 	int m_DirCount{};
@@ -174,81 +185,4 @@ private:
 	os::event m_MessageEvent;
 };
 
-class background_searcher: noncopyable
-{
-public:
-	background_searcher(FindFiles* Owner,
-		string FindString,
-		FINDAREA SearchMode,
-		uintptr_t CodePage,
-		unsigned long long SearchInFirst,
-		bool CmpCase,
-		bool WholeWords,
-		bool SearchInArchives,
-		bool SearchHex,
-		bool NotContaining,
-		bool UseFilter,
-		bool PluginMode
-	);
-
-	void Search();
-	void Pause() const { PauseEvent.reset(); }
-	void Resume() const { PauseEvent.set(); }
-	void Stop() const;
-	bool Stopped() const { return StopEvent.is_signaled(); }
-
-
-	auto ExceptionPtr() const { return m_ExceptionPtr; }
-	auto IsRegularException() const { return m_IsRegularException; }
-
-private:
-	void InitInFileSearch();
-	void ReleaseInFileSearch();
-
-	int FindStringBMH(const wchar_t* searchBuffer, size_t searchBufferCount) const;
-	int FindStringBMH(const char* searchBuffer, size_t searchBufferCount) const;
-	bool LookForString(const string& Name);
-	bool IsFileIncluded(PluginPanelItem* FileItem, const string& FullName, DWORD FileAttr, const string &strDisplayName);
-	void DoPrepareFileList();
-	void DoPreparePluginList(bool Internal);
-	void ArchiveSearch(const string& ArcName);
-	void DoScanTree(const string& strRoot);
-	void ScanPluginTree(plugin_panel* hPlugin, unsigned long long Flags, int& RecurseLevel);
-	void AddMenuRecord(const string& FullName, PluginPanelItem& FindData) const;
-
-	FindFiles* const m_Owner;
-	const string m_EventName;
-
-	std::vector<char> readBufferA;
-	std::vector<wchar_t> readBuffer;
-	bytes hexFindString;
-	std::vector<size_t> skipCharsTable;
-	struct CodePageInfo;
-	std::list<CodePageInfo> m_CodePages;
-	string findStringBuffer;
-	string strPluginSearchPath;
-
-	const wchar_t *findString;
-
-	bool InFileSearchInited;
-	bool m_Autodetection;
-
-	const string strFindStr;
-	const FINDAREA SearchMode;
-	const uintptr_t CodePage;
-	const unsigned long long SearchInFirst;
-	const bool CmpCase;
-	const bool WholeWords;
-	const bool SearchInArchives;
-	const bool SearchHex;
-	const bool NotContaining;
-	const bool UseFilter;
-	const bool m_PluginMode;
-
-	os::event PauseEvent;
-	os::event StopEvent;
-
-	std::exception_ptr m_ExceptionPtr;
-	bool m_IsRegularException{};
-};
 #endif // FINDFILE_HPP_8601893C_E4B7_4EC6_A79F_9C6E491FF5ED

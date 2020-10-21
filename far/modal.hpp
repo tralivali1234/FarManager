@@ -36,31 +36,41 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 
+// Internal:
 #include "window.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
 
 class Modal: public window
 {
 protected:
 	Modal() = default;
-	~Modal() = default;
+	~Modal() override = default;
 };
 
 class SimpleModal: public Modal
 {
 public:
-	virtual void SetExitCode(int Code) override;
+	void SetExitCode(int Code) override;
 
 	bool Done() const;
 	void ClearDone();
 	void Process();
-	void SetHelp(const wchar_t *Topic);
+	void SetHelp(string_view Topic);
 	void ShowHelp() const;
 
 protected:
 	SimpleModal() = default;
 
-	void SetDone(void);
+	void SetDone();
 	void Close(int Code);
+	virtual void OnClose() {}
 
 	string m_HelpTopic;
 

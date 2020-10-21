@@ -59,6 +59,7 @@
 * Alexey Samlyukov
 * Anton Tagunov
 * Alexandr Zamaraev
+* Max Shirshin
 * Alexander Mitin
 * Stanislav Vinokurov
 * Hannes Eder
@@ -106,6 +107,14 @@
 * Pavol Misik
 * Timofey Vasenin
 * Michael Z. Kadaner
+* Vladimir Fekete
+* Daniele Babolin
+* Jesko Huettenhain
+* Andrzej Rudnik
+* Dzmitry Kosko
+* Szabolcs Szász
+* HamRusTal
+* Michal Zobec
  
 > And special thanks to all of our community members!  
 > You are not less important than the people mentioned here.

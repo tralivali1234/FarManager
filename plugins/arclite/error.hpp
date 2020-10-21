@@ -1,27 +1,49 @@
-#pragma once
+﻿#pragma once
 
 #define E_MESSAGE MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x200)
 
 struct Error {
   HRESULT code;
-  list<wstring> messages;
+  std::list<std::wstring> objects;
+  std::list<std::wstring> messages;
+  std::list<std::wstring> warnings;
   const char* file;
   int line;
-  Error(): code(NO_ERROR), file(__FILE__), line(__LINE__) {
+
+  Error() : code(NO_ERROR), file(__FILE__), line(__LINE__)
+  {}
+  Error(HRESULT code, const char* file, int line)
+  : code(code), file(file), line(line)
+  {}
+  Error(HRESULT code, const std::wstring& message, const char* file, int line)
+  : code(code), messages{message}, file(file), line(line)
+  {}
+  Error(const std::wstring& message, const char* file, int line)
+  : code(E_MESSAGE), messages{message}, file(file), line(line)
+  {}
+  Error(const std::wstring& message1, const std::wstring& message2, const char* file, int line)
+  : code(E_MESSAGE), messages{message1, message2}, file(file), line(line)
+  {}
+  Error(const std::exception& e)
+  : code(E_MESSAGE), file(__FILE__), line(__LINE__)
+  {
+    std::string message(std::string(typeid(e).name()) + ": " + e.what());
+    messages.push_back(std::wstring(message.begin(), message.end()));
   }
-  Error(HRESULT code, const char* file, int line): code(code), file(file), line(line) {
+
+  void SetResults(std::list<std::wstring>&& errs, std::list<std::wstring>&& wrns) {
+    messages = errs; warnings = wrns;
+    code = messages.empty() ? (warnings.empty() ? NO_ERROR : S_FALSE) : E_MESSAGE;
   }
-  Error(HRESULT code, const wstring& message, const char* file, int line): code(code), messages(1, message), file(file), line(line) {
+  void Append(const Error& error) {
+    if (&error != this) {
+      for (const auto& msg : error.messages) {
+        messages.emplace_back(msg);
+        code = error.code; file = error.file; line = error.line;
+      }
+    }
   }
-  Error(const wstring& message, const char* file, int line): code(E_MESSAGE), messages(1, message), file(file), line(line) {
-  }
-  Error(const wstring& message1, const wstring& message2, const char* file, int line): code(E_MESSAGE), messages(1, message1), file(file), line(line) {
-    messages.push_back(message2);
-  }
-  Error(const std::exception& e): code(E_MESSAGE), file(__FILE__), line(__LINE__) {
-    string message(string(typeid(e).name()) + ": " + e.what());
-    messages.push_back(wstring(message.begin(), message.end()));
-  }
+
   operator bool() const {
     return code != NO_ERROR;
   }
@@ -33,7 +55,7 @@ struct Error {
 #define CHECK_SYS(code) { if (!(code)) FAIL(HRESULT_FROM_WIN32(GetLastError())); }
 #define CHECK_ADVSYS(code) { DWORD __ret = (code); if (__ret != ERROR_SUCCESS) FAIL(HRESULT_FROM_WIN32(__ret)); }
 #define CHECK_COM(code) { HRESULT __ret = (code); if (FAILED(__ret)) FAIL(__ret); }
-#define CHECK(code) { if (!(code)) FAIL_MSG(L#code); }
+#define CHECK(code) { if (!(code)) FAIL_MSG(L###code); }
 
 #define IGNORE_ERRORS(code) { try { code; } catch (...) { } }
 

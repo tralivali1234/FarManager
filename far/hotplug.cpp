@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "hotplug.hpp"
+
+// Internal:
 #include "lang.hpp"
 #include "keys.hpp"
 #include "help.hpp"
@@ -44,10 +44,23 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "config.hpp"
 #include "pathmix.hpp"
 #include "notification.hpp"
-#include "lasterror.hpp"
 #include "flink.hpp"
 #include "strmix.hpp"
 #include "drivemix.hpp"
+#include "global.hpp"
+#include "keyboard.hpp"
+
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/enum_substrings.hpp"
+#include "common/keep_alive.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 /*
 A device is considered a HotPlug device if the following are TRUE:
@@ -59,12 +72,40 @@ A device is considered a HotPlug device if the following are TRUE:
 - does NOT have Capability CM_DEVCAP_DOCKDEVICE
 */
 
-namespace detail
+namespace
 {
-	struct devinfo_handle_closer { void operator()(HDEVINFO Handle) const { SetupDiDestroyDeviceInfoList(Handle); } };
+	class [[nodiscard]] enum_child_devices: public enumerator<enum_child_devices, DEVINST>
+	{
+		IMPLEMENTS_ENUMERATOR(enum_child_devices);
+
+	public:
+		explicit enum_child_devices(DEVINST Root):
+			m_Root(Root)
+		{
+		}
+
+	private:
+		[[nodiscard, maybe_unused]]
+		bool get(bool Reset, DEVINST& Value) const
+		{
+			if ((Reset? CM_Get_Child(&m_Current, m_Root, 0) : CM_Get_Sibling(&m_Current, m_Current, 0)) != CR_SUCCESS)
+				return false;
+
+			Value = m_Current;
+			return true;
+		}
+
+		DEVINST m_Root;
+		mutable DEVINST m_Current{};
+	};
 }
 
-class dev_info: noncopyable
+namespace detail
+{
+	struct devinfo_handle_closer { void operator()(HDEVINFO Handle) const noexcept { SetupDiDestroyDeviceInfoList(Handle); } };
+}
+
+class [[nodiscard]] dev_info: noncopyable
 {
 	using devinfo_handle = os::detail::handle_t<detail::devinfo_handle_closer>;
 
@@ -82,34 +123,45 @@ public:
 		}
 	}
 
+	[[nodiscard]]
 	explicit operator bool() const noexcept { return m_info != nullptr; }
 
+	[[nodiscard]]
 	bool OpenDeviceInfo(SP_DEVINFO_DATA& info_data) const
 	{
-		return SetupDiOpenDeviceInfo(m_info.native_handle(), m_id.data(), nullptr, 0, &info_data) != FALSE;
+		return SetupDiOpenDeviceInfo(m_info.native_handle(), m_id.c_str(), nullptr, 0, &info_data) != FALSE;
 	}
 
+	[[nodiscard]]
 	bool GetDeviceRegistryProperty(SP_DEVINFO_DATA& info_data, DWORD Property, PDWORD PropertyRegDataType, PBYTE PropertyBuffer, DWORD PropertyBufferSize, PDWORD RequiredSize) const
 	{
 		return SetupDiGetDeviceRegistryProperty(m_info.native_handle(), &info_data, Property, PropertyRegDataType, PropertyBuffer, PropertyBufferSize, RequiredSize) != FALSE;
 	}
 
-	bool EnumDeviceInterfaces(const GUID& InterfaceClassGuid, DWORD MemberIndex, SP_DEVICE_INTERFACE_DATA& DeviceInterfaceData) const
+	[[nodiscard]]
+	bool EnumDeviceInterfaces(const UUID& InterfaceClassUuid, DWORD MemberIndex, SP_DEVICE_INTERFACE_DATA& DeviceInterfaceData) const
 	{
-		return SetupDiEnumDeviceInterfaces(m_info.native_handle(), nullptr, &InterfaceClassGuid, MemberIndex, &DeviceInterfaceData) != FALSE;
+		return SetupDiEnumDeviceInterfaces(m_info.native_handle(), nullptr, &InterfaceClassUuid, MemberIndex, &DeviceInterfaceData) != FALSE;
 	}
 
-	void DeviceInterfacesEnumerator(const GUID&&) = delete;
-	auto DeviceInterfacesEnumerator(const GUID& InterfaceClassGuid) const
+	template<typename uuid_type>
+	[[nodiscard]]
+	auto DeviceInterfacesEnumerator(uuid_type&& InterfaceClassUuid) const
 	{
+		static_assert(std::is_convertible_v<uuid_type, UUID>);
+
 		using value_type = SP_DEVICE_INTERFACE_DATA;
-		return make_inline_enumerator<value_type>([this, &InterfaceClassGuid](size_t Index, value_type& Value)
+		return make_inline_enumerator<value_type>([this, InterfaceClassUuid = keep_alive(FWD(InterfaceClassUuid)), Index = size_t{}](const bool Reset, value_type& Value) mutable
 		{
+			if (Reset)
+				Index = 0;
+
 			Value.cbSize = sizeof(Value);
-			return SetupDiEnumDeviceInterfaces(m_info.native_handle(), nullptr, &InterfaceClassGuid, static_cast<DWORD>(Index), &Value) != FALSE;
+			return SetupDiEnumDeviceInterfaces(m_info.native_handle(), nullptr, &InterfaceClassUuid, static_cast<DWORD>(Index++), &Value) != FALSE;
 		});
 	}
 
+	[[nodiscard]]
 	string GetDevicePath(SP_DEVICE_INTERFACE_DATA& DeviceInterfaceData) const
 	{
 		string result;
@@ -119,7 +171,7 @@ public:
 		{
 			block_ptr<SP_DEVICE_INTERFACE_DETAIL_DATA> DData(RequiredSize);
 			DData->cbSize = sizeof(*DData);
-			if(SetupDiGetDeviceInterfaceDetail(m_info.native_handle(), &DeviceInterfaceData, DData.get(), RequiredSize, nullptr, nullptr))
+			if(SetupDiGetDeviceInterfaceDetail(m_info.native_handle(), &DeviceInterfaceData, DData.data(), RequiredSize, nullptr, nullptr))
 			{
 				result = DData->DevicePath;
 			}
@@ -132,38 +184,70 @@ private:
 	string m_id;
 };
 
+template<typename receiver>
+[[nodiscard]]
+static bool GetDevicePropertyImpl(DEVINST hDevInst, const receiver& Receiver)
+{
+	dev_info Info(hDevInst);
+	if (!Info)
+		return false;
+
+	SP_DEVINFO_DATA DeviceInfoData{ sizeof(DeviceInfoData) };
+	if (!Info.OpenDeviceInfo(DeviceInfoData))
+		return false;
+
+	return Receiver(Info, DeviceInfoData);
+}
+
+[[nodiscard]]
+static bool GetDeviceProperty(DEVINST hDevInst, DWORD Property, DWORD& Value)
+{
+	return GetDevicePropertyImpl(hDevInst, [&](dev_info& Info, SP_DEVINFO_DATA& DeviceInfoData)
+	{
+		return Info.GetDeviceRegistryProperty(DeviceInfoData, Property, nullptr, reinterpret_cast<PBYTE>(&Value), sizeof(Value), nullptr);
+	});
+}
+
+[[nodiscard]]
+static bool GetDeviceProperty(DEVINST hDevInst, DWORD Property, string& Value)
+{
+	return GetDevicePropertyImpl(hDevInst, [&](dev_info& Info, SP_DEVINFO_DATA& DeviceInfoData)
+	{
+		return os::detail::ApiDynamicStringReceiver(Value, [&](span<wchar_t> Buffer)
+		{
+			DWORD RequiredSize = 0;
+			if (Info.GetDeviceRegistryProperty(DeviceInfoData, Property, nullptr, reinterpret_cast<BYTE*>(Buffer.data()), static_cast<DWORD>(Buffer.size()), &RequiredSize))
+				return RequiredSize / sizeof(wchar_t) - 1;
+			return RequiredSize / sizeof(wchar_t);
+		});
+	});
+}
+
+[[nodiscard]]
+static bool GetDevicePropertyRecursive(DEVINST hDevInst, DWORD Property, string& Value)
+{
+	DEVINST hDevChild;
+	return GetDeviceProperty(hDevInst, Property, Value) || (CM_Get_Child(&hDevChild, hDevInst, 0) == CR_SUCCESS && GetDeviceProperty(hDevChild, Property, Value));
+}
+
+[[nodiscard]]
 static bool IsChildDeviceHotplug(DEVINST hDevInst)
 {
 	DEVINST hDevChild;
 	if (CM_Get_Child(&hDevChild, hDevInst, 0) != CR_SUCCESS)
 		return false;
 
-	dev_info Info(hDevChild);
-	if (!Info)
-		return false;
-
-	SP_DEVINFO_DATA DeviceInfoData{ sizeof DeviceInfoData };
-	if (!Info.OpenDeviceInfo(DeviceInfoData))
-		return false;
-
 	DWORD Capabilities = 0;
-	return Info.GetDeviceRegistryProperty(DeviceInfoData, SPDRP_CAPABILITIES, nullptr, reinterpret_cast<PBYTE>(&Capabilities), sizeof(Capabilities), nullptr) &&
-	       !(Capabilities&CM_DEVCAP_SURPRISEREMOVALOK) &&
-	       (Capabilities&CM_DEVCAP_UNIQUEID);
+	return GetDeviceProperty(hDevChild, SPDRP_CAPABILITIES, Capabilities) &&
+		!(Capabilities&CM_DEVCAP_SURPRISEREMOVALOK) &&
+		(Capabilities&CM_DEVCAP_UNIQUEID);
 }
 
-static bool IsDeviceHotplug(DEVINST hDevInst)
+[[nodiscard]]
+static bool IsDeviceHotplug(DEVINST hDevInst, bool const IncludeSafeToRemove)
 {
-	dev_info Info(hDevInst);
-	if (!Info)
-		return false;
-
-	SP_DEVINFO_DATA DeviceInfoData = {sizeof(DeviceInfoData)};
-	if (!Info.OpenDeviceInfo(DeviceInfoData))
-		return false;
-
 	DWORD Capabilities = 0;
-	if (!Info.GetDeviceRegistryProperty(DeviceInfoData, SPDRP_CAPABILITIES, nullptr, reinterpret_cast<PBYTE>(&Capabilities), sizeof(Capabilities), nullptr))
+	if (!GetDeviceProperty(hDevInst, SPDRP_CAPABILITIES, Capabilities))
 		return false;
 
 	DWORD Status = 0, Problem = 0;
@@ -174,33 +258,48 @@ static bool IsDeviceHotplug(DEVINST hDevInst)
 	       (Problem != CM_PROB_HELD_FOR_EJECT) && //возможно, надо проверять на наличие проблем вообще
 	       (Problem != CM_PROB_DISABLED) &&
 	       (Capabilities & CM_DEVCAP_REMOVABLE) &&
-	       (!(Capabilities & CM_DEVCAP_SURPRISEREMOVALOK) || IsChildDeviceHotplug(hDevInst)) &&
+	       (IncludeSafeToRemove || !(Capabilities & CM_DEVCAP_SURPRISEREMOVALOK) || IsChildDeviceHotplug(hDevInst)) &&
 	       !(Capabilities & CM_DEVCAP_DOCKDEVICE);
 }
 
-static DWORD DriveMaskFromVolumeName(const string& VolumeName)
+[[nodiscard]]
+static DWORD DriveMaskFromVolumeName(string_view const VolumeName)
 {
 	DWORD Result = 0;
 	string strCurrentVolumeName;
 	const os::fs::enum_drives Enumerator(os::fs::get_logical_drives());
 	const auto ItemIterator = std::find_if(ALL_CONST_RANGE(Enumerator), [&](const auto& i)
 	{
-		return os::fs::GetVolumeNameForVolumeMountPoint(os::fs::get_root_directory(i), strCurrentVolumeName) && starts_with(strCurrentVolumeName, VolumeName);
+		return os::fs::GetVolumeNameForVolumeMountPoint(os::fs::drive::get_win32nt_root_directory(i), strCurrentVolumeName) && starts_with_icase(strCurrentVolumeName, VolumeName);
 	});
-	if (ItemIterator != Enumerator.cend() && os::fs::is_standard_drive_letter(*ItemIterator))
+	if (ItemIterator != Enumerator.cend() && os::fs::drive::is_standard_letter(*ItemIterator))
 	{
-		Result = bit(os::fs::get_drive_number(*ItemIterator));
+		Result = bit(os::fs::drive::get_number(*ItemIterator));
 	}
 	return Result;
 }
 
-static DWORD GetDriveMaskFromMountPoints(DEVINST hDevInst)
+struct device_paths
 {
-	dev_info Info(hDevInst);
-	if (!Info)
-		return 0;
+	os::fs::drives_set Disks;
+	std::list<string> Volumes;
 
-	DWORD dwMask = 0;
+	void append(device_paths&& rhs)
+	{
+		Disks |= rhs.Disks;
+		Volumes.splice(Volumes.end(), rhs.Volumes);
+	}
+};
+
+[[nodiscard]]
+static device_paths get_device_paths_impl(DEVINST hDevInst)
+{
+	dev_info const Info(hDevInst);
+	if (!Info)
+		return {};
+
+	device_paths DevicePaths;
+
 	for (auto& i: Info.DeviceInterfacesEnumerator(GUID_DEVINTERFACE_VOLUME))
 	{
 		auto strMountPoint = Info.GetDevicePath(i);
@@ -211,164 +310,126 @@ static DWORD GetDriveMaskFromMountPoints(DEVINST hDevInst)
 		string strVolumeName;
 		if (os::fs::GetVolumeNameForVolumeMountPoint(strMountPoint,strVolumeName))
 		{
-			dwMask |= DriveMaskFromVolumeName(strVolumeName);
+			DevicePaths.Disks |= DriveMaskFromVolumeName(strVolumeName);
 		}
+		DevicePaths.Volumes.emplace_back(strVolumeName);
 	}
-	return dwMask;
+
+	return DevicePaths;
 }
 
-static DWORD GetRelationDrivesMask(DEVINST hDevInst)
+[[nodiscard]]
+static device_paths get_relation_device_paths(DEVINST hDevInst)
 {
 	wchar_t szDeviceID[MAX_DEVICE_ID_LEN];
 	if (CM_Get_Device_ID(hDevInst, szDeviceID, static_cast<ULONG>(std::size(szDeviceID)), 0) != CR_SUCCESS)
-		return 0;
+		return {};
 
 	DWORD dwSize = 0;
 	if (CM_Get_Device_ID_List_Size(&dwSize, szDeviceID, CM_GETIDLIST_FILTER_REMOVALRELATIONS) != CR_SUCCESS || !dwSize)
-		return 0;
+		return {};
 
-	wchar_t_ptr_n<MAX_PATH> DeviceIdList(dwSize);
-	if (CM_Get_Device_ID_List(szDeviceID, DeviceIdList.get(), dwSize, CM_GETIDLIST_FILTER_REMOVALRELATIONS) != CR_SUCCESS)
-		return 0;
+	const wchar_t_ptr_n<os::default_buffer_size> DeviceIdList(dwSize);
+	if (CM_Get_Device_ID_List(szDeviceID, DeviceIdList.data(), dwSize, CM_GETIDLIST_FILTER_REMOVALRELATIONS) != CR_SUCCESS)
+		return {};
 
-	DWORD dwMask = 0;
-	const auto DeviceIdListPtr = DeviceIdList.get();
+	device_paths DevicePaths;
+	const auto DeviceIdListPtr = DeviceIdList.data();
 	for (const auto& i: enum_substrings(DeviceIdListPtr))
 	{
 		DEVINST hRelationDevInst;
-		if (CM_Locate_DevNode(&hRelationDevInst, const_cast<DEVINSTID_W>(i.raw_data()), 0) == CR_SUCCESS)
-			dwMask |= GetDriveMaskFromMountPoints(hRelationDevInst);
+		if (CM_Locate_DevNode(&hRelationDevInst, const_cast<DEVINSTID_W>(i.data()), 0) == CR_SUCCESS)
+			DevicePaths.append(get_device_paths_impl(hRelationDevInst));
 	}
 
-	return dwMask;
+	return DevicePaths;
 }
 
-static DWORD GetDriveMaskForDeviceInternal(DEVINST hDevInst)
+[[nodiscard]]
+static device_paths get_device_paths(DEVINST hDevInst)
 {
-	DWORD dwMask = 0;
-	do
+	device_paths DevicePaths;
+
+	DevicePaths.append(get_device_paths_impl(hDevInst));
+	DevicePaths.append(get_relation_device_paths(hDevInst));
+
+	for (const auto& i: enum_child_devices(hDevInst))
 	{
-		if (IsDeviceHotplug(hDevInst))
-			continue;
-
-		dwMask |= GetDriveMaskFromMountPoints(hDevInst);
-		dwMask |= GetRelationDrivesMask(hDevInst);
-
-		DEVINST hDevChild;
-		if (CM_Get_Child(&hDevChild, hDevInst, 0) == CR_SUCCESS)
-			dwMask |= GetDriveMaskForDeviceInternal(hDevChild);
-	}
-	while (CM_Get_Sibling(&hDevInst, hDevInst, 0) == CR_SUCCESS);
-
-	return dwMask;
-}
-
-
-static os::fs::drives_set GetDisksForDevice(DEVINST hDevInst)
-{
-	int DisksMask = 0;
-	DisksMask |= GetDriveMaskFromMountPoints(hDevInst);
-	DisksMask |= GetRelationDrivesMask(hDevInst);
-
-	DEVINST hDevChild;
-	if (CM_Get_Child(&hDevChild, hDevInst, 0) == CR_SUCCESS)
-		DisksMask |= GetDriveMaskForDeviceInternal(hDevChild);
-
-	return DisksMask;
-}
-
-static bool GetDeviceProperty(DEVINST hDevInst, DWORD Property, string& strValue, bool bSearchChild)
-{
-	dev_info Info(hDevInst);
-	if (!Info)
-		return false;
-
-	SP_DEVINFO_DATA DeviceInfoData = {sizeof(DeviceInfoData)};
-	if (!Info.OpenDeviceInfo(DeviceInfoData))
-		return false;
-
-	DWORD RequiredSize = 0;
-	Info.GetDeviceRegistryProperty(DeviceInfoData, Property, nullptr, nullptr, 0, &RequiredSize);
-	if(RequiredSize)
-	{
-		wchar_t_ptr_n<MAX_PATH> Buffer(RequiredSize);
-		if (!Info.GetDeviceRegistryProperty(DeviceInfoData, Property, nullptr, reinterpret_cast<BYTE*>(Buffer.get()), RequiredSize, nullptr))
-			return false;
-
-		strValue = Buffer.get();
-		return true;
+		/*
+		Only get the drive letter for this device if it is not a hotplug device.
+		If it is a hotplug device then it will have its own subtree that contains its drive letters.
+		*/
+		if (!IsDeviceHotplug(i, false))
+			DevicePaths.append(get_device_paths(i));
 	}
 
-	if (!bSearchChild)
-		return false;
-
-	DEVINST hDevChild;
-	return CM_Get_Child(&hDevChild, hDevInst, 0) == CR_SUCCESS && GetDeviceProperty(hDevChild, Property, strValue, bSearchChild);
+	return DevicePaths;
 }
 
 struct DeviceInfo
 {
 	DEVINST DevInst;
-	os::fs::drives_set Disks;
+	device_paths DevicePaths;
 };
 
-static void GetChildHotplugDevicesInfo(DEVINST hDevInst, std::vector<DeviceInfo>& Info)
+static void GetHotplugDevicesInfo(DEVINST hDevInst, std::vector<DeviceInfo>& Info, bool const IncludeSafeToRemove)
 {
-	do
+	if (IsDeviceHotplug(hDevInst, IncludeSafeToRemove))
 	{
-		if (IsDeviceHotplug(hDevInst))
-		{
-			DeviceInfo Item = {hDevInst, GetDisksForDevice(hDevInst)};
-			Info.emplace_back(Item);
-		}
-
-		DEVINST hDevChild;
-		if (CM_Get_Child(&hDevChild, hDevInst, 0) == CR_SUCCESS)
-			GetChildHotplugDevicesInfo(hDevChild, Info);
+		Info.emplace_back(DeviceInfo{ hDevInst, get_device_paths(hDevInst) });
 	}
-	while (CM_Get_Sibling(&hDevInst, hDevInst, 0) == CR_SUCCESS);
+
+	for (const auto& i: enum_child_devices(hDevInst))
+	{
+		GetHotplugDevicesInfo(i, Info, IncludeSafeToRemove);
+	}
 }
 
-static auto GetHotplugDevicesInfo()
+[[nodiscard]]
+static auto GetHotplugDevicesInfo(bool const IncludeSafeToRemove)
 {
 	std::vector<DeviceInfo> Result;
 
-	DEVNODE hDevRoot;
-	if (CM_Locate_DevNodeW(&hDevRoot, nullptr, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS)
+	DEVNODE Root;
+	if (CM_Locate_DevNodeW(&Root, nullptr, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS)
 	{
-		DEVINST hDevChild;
-		if (CM_Get_Child(&hDevChild, hDevRoot, 0) == CR_SUCCESS)
-		{
-			GetChildHotplugDevicesInfo(hDevChild, Result);
-		}
+		GetHotplugDevicesInfo(Root, Result, IncludeSafeToRemove);
 	}
+
 	return Result;
 }
 
-static int RemoveHotplugDevice(const DeviceInfo& Info, DWORD Flags)
+[[nodiscard]]
+static bool RemoveHotplugDriveDevice(const DeviceInfo& Info, bool const Confirm, bool& Cancelled)
 {
 	string strFriendlyName;
-	GetDeviceProperty(Info.DevInst, SPDRP_FRIENDLYNAME, strFriendlyName, true);
-	inplace::trim(strFriendlyName);
+	if (GetDevicePropertyRecursive(Info.DevInst, SPDRP_FRIENDLYNAME, strFriendlyName))
+		inplace::trim(strFriendlyName);
 
 	string strDescription;
-	GetDeviceProperty(Info.DevInst, SPDRP_DEVICEDESC, strDescription, true);
-	inplace::trim(strDescription);
+	if (GetDevicePropertyRecursive(Info.DevInst, SPDRP_DEVICEDESC, strDescription))
+		inplace::trim(strDescription);
 
-	int MessageResult = 0;
+	int MessageResult = Message::first_button;
 
-	if (!(Flags&EJECT_NO_MESSAGE) && Global->Opt->Confirm.RemoveHotPlug)
+	if (Confirm)
 	{
 		string DisksStr;
-		for (size_t i = 0; i < Info.Disks.size(); ++i)
+		const auto Separator = L", "sv;
+		for (size_t i = 0; i < Info.DevicePaths.Disks.size(); ++i)
 		{
-			if (Info.Disks[i])
-				append(DisksStr, static_cast<wchar_t>(L'A' + i), L":, "_sv);
+			if (Info.DevicePaths.Disks[i])
+				append(DisksStr, os::fs::drive::get_device_path(i), Separator);
 		}
-
 		// remove trailing ", "
 		if (!DisksStr.empty())
-			DisksStr.resize(DisksStr.size() - 2);
+		{
+			DisksStr.resize(DisksStr.size() - Separator.size());
+		}
+		else
+		{
+			DisksStr = join(Info.DevicePaths.Volumes, L", "sv);
+		}
 
 		std::vector<string> MessageItems;
 		MessageItems.reserve(6);
@@ -380,7 +441,7 @@ static int RemoveHotplugDevice(const DeviceInfo& Info, DWORD Flags)
 			MessageItems.emplace_back(strFriendlyName);
 
 		if (!DisksStr.empty())
-			MessageItems.emplace_back(format(lng::MHotPlugDisks, DisksStr));
+			MessageItems.emplace_back(format(msg(lng::MHotPlugDisks), DisksStr));
 
 		MessageResult = Message(MSG_WARNING,
 			msg(lng::MChangeHotPlugDisconnectDriveTitle),
@@ -388,115 +449,140 @@ static int RemoveHotplugDevice(const DeviceInfo& Info, DWORD Flags)
 			{ lng::MHRemove, lng::MHCancel });
 	}
 
-	int bResult = -1;
-
-	if (MessageResult == 0)
+	if (MessageResult != Message::first_button)
 	{
-		PNP_VETO_TYPE pvtVeto = PNP_VetoTypeUnknown;
-		wchar_t VetoName[MAX_PATH];
-		CONFIGRET crResult = CM_Request_Device_Eject(Info.DevInst, &pvtVeto, VetoName, static_cast<ULONG>(std::size(VetoName)), 0);
-		if ((crResult != CR_SUCCESS) || (pvtVeto != PNP_VetoTypeUnknown))   //M$ баг, если есть VetoName, то даже при ошибке возвращается CR_SUCCESS
-		{
-			SetLastError((pvtVeto != PNP_VetoTypeUnknown)?ERROR_DRIVE_LOCKED:ERROR_UNABLE_TO_UNLOAD_MEDIA); // "The disk is in use or locked by another process."
-			bResult = 0;
-		}
-		else
-		{
-			SetLastError(ERROR_SUCCESS);
-			bResult = 1;
-		}
+		Cancelled = true;
+		return false;
 	}
 
-	if (bResult == 1 && (Flags&EJECT_NOTIFY_AFTERREMOVE))
+	PNP_VETO_TYPE pvtVeto = PNP_VetoTypeUnknown;
+	wchar_t VetoName[MAX_PATH];
+
+	const auto crResult = CM_Request_Device_Eject(Info.DevInst, &pvtVeto, VetoName, static_cast<ULONG>(std::size(VetoName)), 0);
+	if (crResult != CR_SUCCESS || pvtVeto != PNP_VetoTypeUnknown)   //M$ баг, если есть VetoName, то даже при ошибке возвращается CR_SUCCESS
 	{
-		Message(0,
-			msg(lng::MChangeHotPlugDisconnectDriveTitle),
-			{
-				msg(lng::MChangeHotPlugNotify1),
-				strDescription,
-				strFriendlyName,
-				msg(lng::MChangeHotPlugNotify2)
-			},
-			{ lng::MOk });
+		SetLastError(pvtVeto == PNP_VetoTypeUnknown? ERROR_UNABLE_TO_UNLOAD_MEDIA : ERROR_DRIVE_LOCKED);
+		return false;
 	}
 
-	return bResult;
+	Message(0,
+		msg(lng::MChangeHotPlugDisconnectDriveTitle),
+		{
+			msg(lng::MChangeHotPlugNotify1),
+			strDescription,
+			strFriendlyName,
+			msg(lng::MChangeHotPlugNotify2)
+		},
+		{ lng::MOk });
+
+	return true;
 }
 
-int RemoveHotplugDisk(wchar_t Disk, DWORD Flags)
+[[nodiscard]]
+bool RemoveHotplugDrive(string_view const Path, bool const Confirm, bool& Cancelled)
 {
-	if (!os::fs::is_standard_drive_letter(Disk))
-		return -1;
-	
-	string DevName;
-	if (GetVHDInfo(os::fs::get_drive(Disk), DevName))
+	// Removing VHD disk as hotplug is a very bad idea.
+	// Currently OS removes the device but doesn't close the file handle, rendering the file completely unavailable until reboot.
+	if (auto IsVhd = false; detach_vhd(Path, IsVhd))
 	{
-		// Removing VHD disk as hotplug is a very bad idea.
-		// Currently OS removes the device but doesn't close the file handle, rendering the file completely unavailable until reboot.
-		// So just use the Del key.
-		return -1;
+		return true;
+	}
+	else if (IsVhd)
+	{
+		Cancelled = true;
+		return false;
 	}
 
-	SCOPED_ACTION(GuardLastError);
-	const auto Info = GetHotplugDevicesInfo();
-	const auto DiskNumber = os::fs::get_drive_number(Disk);
-	const auto ItemIterator = std::find_if(CONST_RANGE(Info, i) {return i.Disks[DiskNumber];});
-	return ItemIterator != Info.cend()? RemoveHotplugDevice(*ItemIterator, Flags) : -1;
+	const auto PathType = ParsePath(Path);
+	if (PathType != root_type::win32nt_drive_letter && PathType != root_type::volume)
+	{
+		Cancelled = true;
+		return false;
+	}
+
+	// Some USB drives always have CM_DEVCAP_SURPRISEREMOVALOK flag set
+	const auto Info = GetHotplugDevicesInfo(true);
+
+	const auto ItemIterator = [&]
+	{
+		if (PathType == root_type::win32nt_drive_letter)
+		{
+			const auto DiskNumber = os::fs::drive::get_number(Path[L"\\\\?\\"sv.size()]);
+			return std::find_if(CONST_RANGE(Info, i) { return i.DevicePaths.Disks[DiskNumber]; });
+		}
+
+		return std::find_if(CONST_RANGE(Info, i)
+		{
+			return std::any_of(ALL_CONST_RANGE(i.DevicePaths.Volumes), [&](string const& VolumeName)
+			{
+				return equal_icase(VolumeName, Path);
+			});
+		});
+	}();
+
+	if (ItemIterator == Info.cend())
+	{
+		Cancelled = true;
+		return false;
+	}
+
+	return RemoveHotplugDriveDevice(*ItemIterator, Confirm, Cancelled);
 }
 
 void ShowHotplugDevices()
 {
-	const auto HotPlugList = VMenu2::create(msg(lng::MHotPlugListTitle), nullptr, 0, 0);
+	const auto HotPlugList = VMenu2::create(msg(lng::MHotPlugListTitle), {}, 0);
 	std::vector<DeviceInfo> Info;
 
-	const auto& FillMenu = [&]()
+	const auto FillMenu = [&]()
 	{
 		HotPlugList->clear();
-		Info = GetHotplugDevicesInfo();
+		Info = GetHotplugDevicesInfo(false);
 
-		if (!Info.empty())
+		if (Info.empty())
+			return;
+
+		for (const auto& i: Info)
 		{
-			std::for_each(CONST_RANGE(Info, i)
+			MenuItemEx ListItem;
+			string strDescription;
+			if (GetDevicePropertyRecursive(i.DevInst, SPDRP_DEVICEDESC, strDescription) && !strDescription.empty())
 			{
-				MenuItemEx ListItem;
-				string strFriendlyName, strDescription;
-				if (GetDeviceProperty(i.DevInst, SPDRP_DEVICEDESC, strDescription, true) && !strDescription.empty())
-				{
-					inplace::trim(strDescription);
-					ListItem.strName = strDescription;
-				}
+				inplace::trim(strDescription);
+				ListItem.Name = strDescription;
+			}
 
-				if (GetDeviceProperty(i.DevInst, SPDRP_FRIENDLYNAME, strFriendlyName, true))
-				{
-					inplace::trim(strFriendlyName);
+			string strFriendlyName;
+			if (GetDevicePropertyRecursive(i.DevInst, SPDRP_FRIENDLYNAME, strFriendlyName) && !strFriendlyName.empty())
+			{
+				inplace::trim(strFriendlyName);
 
-					if (!strDescription.empty())
+				if (!strDescription.empty())
+				{
+					if (!equal_icase(strDescription, strFriendlyName))
 					{
-						if (!strFriendlyName.empty() && !equal_icase(strDescription, strFriendlyName))
-						{
-							append(ListItem.strName, L" \""_sv, strFriendlyName, L"\""_sv);
-						}
-					}
-					else if (!strFriendlyName.empty())
-					{
-						ListItem.strName = strFriendlyName;
+						append(ListItem.Name, L" \""sv, strFriendlyName, L"\""sv);
 					}
 				}
-
-				if (ListItem.strName.empty())
+				else
 				{
-					ListItem.strName = L"UNKNOWN";
+					ListItem.Name = strFriendlyName;
 				}
-				HotPlugList->AddItem(ListItem);
-			});
+			}
+
+			if (ListItem.Name.empty())
+			{
+				ListItem.Name = L"UNKNOWN"sv;
+			}
+			HotPlugList->AddItem(ListItem);
 		}
 	};
 
 	FillMenu();
-	HotPlugList->SetMenuFlags(VMENU_WRAPMODE | VMENU_AUTOHIGHLIGHT);
-	HotPlugList->SetPosition(-1,-1,0,0);
-	HotPlugList->AssignHighlights(TRUE);
-	HotPlugList->SetBottomTitle(msg(lng::MHotPlugListBottom));
+	HotPlugList->SetMenuFlags(VMENU_WRAPMODE | VMENU_SHOWAMPERSAND | VMENU_AUTOHIGHLIGHT);
+	HotPlugList->SetPosition({ -1, -1, 0, 0 });
+	HotPlugList->AssignHighlights();
+	HotPlugList->SetBottomTitle(KeysToLocalizedText(KEY_DEL, KEY_CTRLR));
 
 	bool NeedRefresh = false;
 
@@ -520,7 +606,7 @@ void ShowHotplugDevices()
 		{
 			case KEY_F1:
 			{
-				Help::create(L"HotPlugList");
+				help::show(L"HotPlugList"sv);
 				break;
 			}
 			case KEY_CTRLR:
@@ -533,23 +619,23 @@ void ShowHotplugDevices()
 			{
 				if (!HotPlugList->empty())
 				{
-					int bResult;
-					int I = HotPlugList->GetSelectPos();
+					const auto I = HotPlugList->GetSelectPos();
 
-					if ((bResult=RemoveHotplugDevice(Info[I], EJECT_NOTIFY_AFTERREMOVE)) == 1)
+					bool Cancelled = false;
+					if (RemoveHotplugDriveDevice(Info[I], Global->Opt->Confirm.RemoveHotPlug, Cancelled))
 					{
 						FillMenu();
 					}
-					else if (bResult != -1)
+					else if (!Cancelled)
 					{
-						SetLastError(ERROR_DRIVE_LOCKED); // ...ю "The disk is in use or locked by another process."
+						SetLastError(ERROR_DRIVE_LOCKED); // ... "The disk is in use or locked by another process."
 						const auto ErrorState = error_state::fetch();
 
 						Message(MSG_WARNING, ErrorState,
 							msg(lng::MError),
 							{
 								msg(lng::MChangeCouldNotEjectHotPlugMedia2),
-								HotPlugList->at(I).strName
+								HotPlugList->at(I).Name
 							},
 							{ lng::MOk });
 					}

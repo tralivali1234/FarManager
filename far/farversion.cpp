@@ -31,15 +31,29 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "farversion.hpp"
 
-/* $ 07.12.2000 SVS
-   + Версия берется из файла farversion.inc
-*/
-const VersionInfo FAR_VERSION
+// Internal:
+#include "plugin.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+namespace build
 {
+#include "bootstrap/copyright.inc"
+
+	VersionInfo version()
+	{
+		return
+		{
 #include "bootstrap/farversion.inc"
-};
+		};
+	}
+}

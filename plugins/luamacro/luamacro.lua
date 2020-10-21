@@ -1,3 +1,4 @@
+-- coding: utf-8
 -- started: 2012-04-20
 
 -- This plugin does not support reloading the default script on the fly.
@@ -39,7 +40,7 @@ end
 function coroutine.resume(co, ...) return yield_resume(co, co_resume(co, ...)) end
 
 local ErrMsg = function(msg, title, buttons, flags)
-  if type(msg)=="string" and not msg:utf8valid() then
+  if type(msg)=="string" and not msg:utf8valid() and string.sub(msg,1,3)~="..." then
     local wstr = win.MultiByteToWideChar(msg, win.GetACP(), "e")
     msg = wstr and win.Utf16ToUtf8(wstr) or msg
   end
@@ -208,24 +209,6 @@ local function postmacro (f, ...)
   return false
 end
 
-local function MacroInit (Id)
-  local chunk, params
-  if Id.action then
-    chunk = Id.action
-  elseif Id.code then
-    chunk, params = loadmacro(Id.language, Id.code)
-  elseif Id.HasFunction then
-    chunk, params = Id[1], Id[2] -- макросы, запускаемые посредством MSSC_POST или с командной строки
-  else
-    chunk, params = Id[1], function() return unpack(Id,2,Id.n) end -- макросы, запускаемые через mf.postmacro
-  end
-  if chunk then
-    return { coro=coroutine.create(chunk), params=params, _store=nil }
-  else
-    ErrMsg(params)
-  end
-end
-
 local function FixReturn (handle, ok, ...)
   local ret1, ret_type = ...
   if ok then
@@ -237,9 +220,9 @@ local function FixReturn (handle, ok, ...)
       return F.MPRT_NORMALFINISH, pack(true, ...)
     end
   else
-    ret1 = type(ret1)=="string" and ret1 or "(error object is not a string)"
-    ret1 = debug.traceback(handle.coro, ret1):gsub("\n\t","\n   ")
-    ErrMsg(ret1)
+    local msg = type(ret1)=="string" and ret1 or "(error object is not a string)"
+    msg = string.gsub(debug.traceback(handle.coro, msg), "\n\t", "\n   ")
+    ErrMsg(msg)
     return F.MPRT_ERRORFINISH
   end
 end
@@ -251,12 +234,17 @@ local function MacroStep (handle, ...)
       if handle.params then
         local params = handle.params
         handle.params = nil
-        local tt = pack(xpcall(params, debug.traceback))
-        if tt[1] then
-          return FixReturn(handle, co_resume(handle.coro, unpack(tt,2,tt.n)))
-        else
-          ErrMsg(tt[2])
-          return F.MPRT_ERRORFINISH
+        local tp = type(params)
+        if tp == "function" then
+          local tt = pack(xpcall(params, debug.traceback))
+          if tt[1] then
+            return FixReturn(handle, co_resume(handle.coro, unpack(tt,2,tt.n)))
+          else
+            ErrMsg(tt[2])
+            return F.MPRT_ERRORFINISH
+          end
+        elseif tp == "table" then
+          return FixReturn(handle, co_resume(handle.coro, params))
         end
       else
         return FixReturn(handle, co_resume(handle.coro, ...))
@@ -265,7 +253,7 @@ local function MacroStep (handle, ...)
       ErrMsg("Step: called on macro in "..status.." status") -- debug only: should not be here
     end
   else
-    ErrMsg(("Step: handle %d does not exist"):format(handle)) -- debug only: should not be here
+    ErrMsg("Step: handle does not exist") -- debug only: should not be here
   end
 end
 
@@ -348,7 +336,7 @@ local function ShowCmdLineHelp()
   end
 end
 
-local function ProcessCommandLine (strCmdLine)
+local function Open_CommandLine (strCmdLine)
   local prefix, text = strCmdLine:match("^%s*([^:%s]+):%s*(.-)%s*$")
   if not prefix then return end -- this can occur with Plugin.Command()
   prefix = prefix:lower()
@@ -389,57 +377,110 @@ local function ProcessCommandLine (strCmdLine)
     end
   else
     local item = utils.GetPrefixes()[prefix]
-    if item then item.action(prefix, text) end
+    if item then return item.action(prefix, text) end
   end
 end
 
-function export.Open (OpenFrom, arg1, ...)
-  if OpenFrom == F.OPEN_LUAMACRO then
-    local calltype = arg1
-    if     calltype==F.MCT_KEYMACRO       then return keymacro.Dispatch(...)
-    elseif calltype==F.MCT_MACROPARSE     then return MacroParse(...)
-    elseif calltype==F.MCT_DELMACRO       then return utils.DelMacro(...)
-    elseif calltype==F.MCT_ENUMMACROS     then return utils.EnumMacros(...)
-    elseif calltype==F.MCT_GETMACRO       then return utils.GetMacroWrapper(...)
-    elseif calltype==F.MCT_LOADMACROS     then
-      local InitedRAM,Paths = ...
-      keymacro.InitInternalVars(InitedRAM)
-      return utils.LoadMacros(false,Paths)
-    elseif calltype==F.MCT_RECORDEDMACRO  then return utils.ProcessRecordedMacro(...)
-    elseif calltype==F.MCT_RUNSTARTMACRO  then return utils.RunStartMacro()
-    elseif calltype==F.MCT_WRITEMACROS    then return utils.WriteMacros()
-    elseif calltype==F.MCT_EXECSTRING     then return ExecString(...)
-    elseif calltype==F.MCT_ADDMACRO       then return utils.AddMacroFromFAR(...)
-    elseif calltype==F.MCT_PANELSORT      then
-      if panelsort then
-        TablePanelSort = { panelsort.SortPanelItems(...) }
-        if TablePanelSort[1] then return TablePanelSort end
-      end
-    elseif calltype==F.MCT_GETCUSTOMSORTMODES then
-      if panelsort then
-        TablePanelSort = panelsort.GetSortModes()
-        return TablePanelSort
-      end
-    elseif calltype==F.MCT_CANPANELSORT then
-      return panelsort and panelsort.CanDoPanelSort(...)
+local function PanelModuleExist(mod)
+  for _,module in ipairs(utils.GetPanelModules()) do
+    if mod == module then return true; end
+  end
+end
+
+local function Open_LuaMacro (calltype, ...)
+  if     calltype==F.MCT_KEYMACRO       then return keymacro.Dispatch(...)
+  elseif calltype==F.MCT_MACROPARSE     then return MacroParse(...)
+  elseif calltype==F.MCT_DELMACRO       then return utils.DelMacro(...)
+  elseif calltype==F.MCT_ENUMMACROS     then return utils.EnumMacros(...)
+  elseif calltype==F.MCT_GETMACRO       then return utils.GetMacroWrapper(...)
+  elseif calltype==F.MCT_LOADMACROS     then
+    local InitedRAM,Paths = ...
+    keymacro.InitInternalVars(InitedRAM)
+    return utils.LoadMacros(false,Paths)
+  elseif calltype==F.MCT_RECORDEDMACRO  then return utils.ProcessRecordedMacro(...)
+  elseif calltype==F.MCT_RUNSTARTMACRO  then return utils.RunStartMacro()
+  elseif calltype==F.MCT_WRITEMACROS    then return utils.WriteMacros()
+  elseif calltype==F.MCT_EXECSTRING     then return ExecString(...)
+  elseif calltype==F.MCT_ADDMACRO       then return utils.AddMacroFromFAR(...)
+  elseif calltype==F.MCT_PANELSORT      then
+    if panelsort then
+      TablePanelSort = { panelsort.SortPanelItems(...) }
+      if TablePanelSort[1] then return TablePanelSort end
     end
+  elseif calltype==F.MCT_GETCUSTOMSORTMODES then
+    if panelsort then
+      TablePanelSort = panelsort.GetSortModes()
+      return TablePanelSort
+    end
+  elseif calltype==F.MCT_CANPANELSORT then
+    return panelsort and panelsort.CanDoPanelSort(...)
+  end
+end
+
+local CanCreatePanel = {
+  [F.OPEN_LEFTDISKMENU]  = true;
+  [F.OPEN_RIGHTDISKMENU] = true;
+  [F.OPEN_FINDLIST]      = true;
+  [F.OPEN_SHORTCUT]      = true;
+--[F.OPEN_FILEPANEL]     = true; -- does it needed?
+  [F.OPEN_PLUGINSMENU]   = true;
+}
+
+function export.Open (OpenFrom, guid, ...)
+  if OpenFrom == F.OPEN_LUAMACRO then
+    return Open_LuaMacro(guid, ...)
 
   elseif OpenFrom == F.OPEN_COMMANDLINE then
-    local guid, cmdline =  arg1, ...
-    return ProcessCommandLine(cmdline)
+    local mod, obj = Open_CommandLine(...)
+    return mod and obj and PanelModuleExist(mod) and { module=mod; object=obj }
 
-  elseif OpenFrom == F.OPEN_FROMMACRO then
-    local guid, args =  arg1, ...
-    if args[1]=="argtest" then -- argtest: return received arguments
-      return unpack(args,2,args.n)
-    elseif args[1]=="macropost" then -- test Mantis # 2222
+  elseif OpenFrom == F.OPEN_ANALYSE then
+    local info = ...
+    local mod = info.Handle.module
+    if type(mod.Open) == "function" then
+      info.Handle = info.Handle.object
+      local obj = mod.Open(OpenFrom, guid, info)
+      return obj and { module=mod; object=obj }
+    end
+
+  elseif OpenFrom == F.OPEN_FINDLIST then
+    for _,mod in ipairs(utils.GetPanelModules()) do
+      if type(mod.Open) == "function" then
+        local obj = mod.Open(OpenFrom, guid, ...)
+        if obj then return { module=mod; object=obj } end
+      end
+    end
+
+  elseif OpenFrom == F.OPEN_SHORTCUT then
+    local info = ...
+    if info.ShortcutData then
+      local mod_guid, data = info.ShortcutData:match(
+        "^(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)/(.*)")
+      if mod_guid then
+        local mod = utils.GetPanelModules()[win.Uuid(mod_guid)]
+        if mod and type(mod.Open) == "function" then
+          info.ShortcutData = data
+          local obj = mod.Open(OpenFrom, guid, info)
+          return obj and { module=mod; object=obj }
+        end
+      end
+    end
+
+  elseif OpenFrom == F.OPEN_FROMMACRO then -- TODO: add panel modules support
+    local argtable =  ...
+    if argtable[1]=="argtest" then -- argtest: return received arguments
+      return unpack(argtable, 2, argtable.n)
+    elseif argtable[1]=="macropost" then -- test Mantis # 2222
       return far.MacroPost([[far.Message"macropost"]])
     end
 
   else
     local items = utils.GetMenuItems()
-    if items[arg1] then
-      items[arg1].action(OpenFrom, ...)
+    if items[guid] then
+      local mod, obj = items[guid].action(OpenFrom, ...)
+      if CanCreatePanel[OpenFrom] and mod and obj and PanelModuleExist(mod) then
+        return { module=mod; object=obj }
+      end
     else
       macrobrowser()
     end
@@ -447,23 +488,10 @@ function export.Open (OpenFrom, arg1, ...)
   end
 end
 
+-- TODO: when called from a module's panel, call that module's Configure()
 function export.Configure (guid)
   local items = utils.GetMenuItems()
   if items[guid] then items[guid].action() end
-end
-
--- Add function unicode.utf8.cfind:
--- same as find, but offsets are in characters rather than bytes
-local function AddCfindFunction()
-  local usub, ssub = unicode.utf8.sub, string.sub
-  local ulen, slen = unicode.utf8.len, string.len
-  local ufind = unicode.utf8.find
-  unicode.utf8.cfind = function(s, patt, init, plain)
-    init = init and slen(usub(s, 1, init-1)) + 1
-    local t = { ufind(s, patt, init, plain) }
-    if t[1] == nil then return nil end
-    return ulen(ssub(s, 1, t[1]-1)) + 1, ulen(ssub(s, 1, t[2])), unpack(t, 3)
-  end
 end
 
 local function Init()
@@ -471,7 +499,6 @@ local function Init()
     ErrMsg            = ErrMsg,
     ExpandEnv         = ExpandEnv,
     GetLastParseError = GetLastParseError,
-    MacroInit         = MacroInit,
     MacroStep         = MacroStep,
     checkarg          = checkarg,
     loadmacro         = loadmacro,
@@ -504,6 +531,7 @@ local function Init()
   Shared.keymacro = keymacro
   mf.mmode, _G.mmode = keymacro.mmode, keymacro.mmode
   mf.akey, _G.akey = keymacro.akey, keymacro.akey
+  mf.AddExitHandler = keymacro.AddExitHandler
 
   macrobrowser = RunPluginFile("mbrowser.lua", Shared)
 
@@ -527,7 +555,6 @@ local function Init()
 
   utils.FixInitialModules()
   utils.InitMacroSystem()
-  AddCfindFunction()
   local macros = win.GetEnv("farprofile").."\\Macros\\"
   local modules = macros .. "modules\\"
   package.path = modules.."?.lua;"..modules.."?\\init.lua;"..package.path
@@ -538,6 +565,53 @@ local function Init()
     _G.IsLuaStateRecreated = nil
     utils.LoadMacros()
   end
+end
+
+function export.Analyse(Data)
+  for _,module in ipairs(utils.GetPanelModules()) do
+    if type(module.Analyse) == "function" then
+      local datacopy = {}; for k,v in pairs(Data) do datacopy[k]=v; end -- prevent modifying 'Data'
+      local obj = module.Analyse(datacopy)
+      if obj then
+        return { module=module; object=obj }
+      end
+    end
+  end
+end
+
+function export.GetOpenPanelInfo (wrapped_obj, handle, ...)
+  local mod, obj = wrapped_obj.module, wrapped_obj.object
+  if type(mod.GetOpenPanelInfo) == "function" then
+    local op_info = mod.GetOpenPanelInfo(obj, handle, ...)
+    if type(op_info) == "table" then
+      if type(op_info.ShortcutData) == "string"
+         and type(mod.Info) == "table"
+         and type(mod.Info.Guid) == "string"
+      then
+        op_info._ModuleShortcutData = win.Uuid(mod.Info.Guid) .. "/" .. op_info.ShortcutData
+      end
+      return op_info
+    end
+  end
+end
+
+function export.MakeDirectory (wrapped_obj, ...)
+  local func = wrapped_obj.module.MakeDirectory
+  if type(func) == "function" then return func(wrapped_obj.object, ...)
+  else return 1, "" -- suppress Far error message
+  end
+end
+
+for _,name in ipairs {"ClosePanel","Compare","DeleteFiles","GetFiles","GetFindData",
+      "ProcessHostFile","ProcessPanelEvent","ProcessPanelInput","PutFiles","SetDirectory",
+      "SetFindList"} do
+  export[name] =
+    function(wrapped_obj, ...)
+      local func = wrapped_obj.module[name]
+      if type(func) == "function" then
+        return func(wrapped_obj.object, ...)
+      end
+    end
 end
 
 local ok, msg = pcall(Init) -- pcall is used to handle RunPluginFile() failure in one place only

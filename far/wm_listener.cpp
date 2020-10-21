@@ -30,18 +30,31 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "wm_listener.hpp"
+
+// Internal:
 #include "config.hpp"
 #include "imports.hpp"
 #include "notification.hpp"
+#include "global.hpp"
+#include "exception.hpp"
+#include "exception_handler.hpp"
+
+// Platform:
+
+// Common:
+#include "common/scope_exit.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
 
 static std::exception_ptr* WndProcExceptionPtr;
 static LRESULT CALLBACK WndProc(HWND Hwnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-	try
+	cpp_try(
+	[&]
 	{
 		switch (Msg)
 		{
@@ -55,19 +68,21 @@ static LRESULT CALLBACK WndProc(HWND Hwnd, UINT Msg, WPARAM wParam, LPARAM lPara
 
 		case WM_DEVICECHANGE:
 			{
-				auto Arrival = false;
 				switch (wParam)
 				{
 				case DBT_DEVICEARRIVAL:
-					Arrival=true;
-					// fallthrough
 				case DBT_DEVICEREMOVECOMPLETE:
 					{
-						const auto BroadcastHeader = reinterpret_cast<const DEV_BROADCAST_HDR*>(lParam);
-						if (BroadcastHeader->dbch_devicetype == DBT_DEVTYP_VOLUME)
+						const auto& BroadcastHeader = *reinterpret_cast<const DEV_BROADCAST_HDR*>(lParam);
+						if (BroadcastHeader.dbch_devicetype == DBT_DEVTYP_VOLUME)
 						{
-							const auto BroadcastVolume = reinterpret_cast<const DEV_BROADCAST_VOLUME*>(BroadcastHeader);
-							MessageManager().notify(update_devices, update_devices_message{ Arrival, BroadcastVolume->dbcv_unitmask });
+							const auto& BroadcastVolume = *reinterpret_cast<const DEV_BROADCAST_VOLUME*>(&BroadcastHeader);
+							message_manager::instance().notify(update_devices, update_devices_message
+							{
+								BroadcastVolume.dbcv_unitmask,
+								wParam == DBT_DEVICEARRIVAL,
+								(BroadcastVolume.dbcv_flags & DBTF_MEDIA) != 0
+							});
 						}
 					}
 					break;
@@ -78,16 +93,18 @@ static LRESULT CALLBACK WndProc(HWND Hwnd, UINT Msg, WPARAM wParam, LPARAM lPara
 		case WM_SETTINGCHANGE:
 			if (lParam)
 			{
-				if (equal(reinterpret_cast<const wchar_t*>(lParam), L"Environment"_sv))
+				const auto Area = reinterpret_cast<const wchar_t*>(lParam);
+
+				if (Area == L"Environment"sv)
 				{
 					if (Global->Opt->UpdateEnvironment)
 					{
-						MessageManager().notify(update_environment);
+						message_manager::instance().notify(update_environment);
 					}
 				}
-				else if (equal(reinterpret_cast<const wchar_t*>(lParam), L"intl"_sv))
+				else if (Area == L"intl"sv)
 				{
-					MessageManager().notify(update_intl);
+					message_manager::instance().notify(update_intl);
 				}
 			}
 			break;
@@ -96,10 +113,10 @@ static LRESULT CALLBACK WndProc(HWND Hwnd, UINT Msg, WPARAM wParam, LPARAM lPara
 			switch (wParam)
 			{
 			case PBT_APMPOWERSTATUSCHANGE: // change status
-
 			case PBT_POWERSETTINGCHANGE:   // change percent
-				MessageManager().notify(update_power);
+				message_manager::instance().notify(update_power);
 				break;
+
 			// TODO:
 			// PBT_APMSUSPEND & PBT_APMRESUMEAUTOMATIC handlers
 
@@ -108,8 +125,11 @@ static LRESULT CALLBACK WndProc(HWND Hwnd, UINT Msg, WPARAM wParam, LPARAM lPara
 			break;
 
 		}
-	}
-	CATCH_AND_SAVE_EXCEPTION_TO(*WndProcExceptionPtr)
+	},
+	[]
+	{
+		SAVE_EXCEPTION_TO(*WndProcExceptionPtr);
+	});
 
 	return DefWindowProc(Hwnd, Msg, wParam, lParam);
 }
@@ -134,9 +154,9 @@ void wm_listener::Check()
 {
 	if (!m_Thread.joinable() || m_Thread.is_signaled())
 	{
-		RethrowIfNeeded(m_ExceptionPtr);
+		rethrow_if(m_ExceptionPtr);
 		os::event ReadyEvent(os::event::type::automatic, os::event::state::nonsignaled);
-		m_Thread = os::thread(&os::thread::join, &wm_listener::WindowThreadRoutine, this, &ReadyEvent);
+		m_Thread = os::thread(os::thread::mode::join, &wm_listener::WindowThreadRoutine, this, &ReadyEvent);
 		ReadyEvent.wait();
 	}
 }
@@ -159,8 +179,8 @@ void wm_listener::WindowThreadRoutine(const os::event* ReadyEvent)
 		return;
 
 	// for PBT_POWERSETTINGCHANGE
-	const auto hpn = imports::instance().RegisterPowerSettingNotification(m_Hwnd,&GUID_BATTERY_PERCENTAGE_REMAINING,DEVICE_NOTIFY_WINDOW_HANDLE);
-	SCOPE_EXIT{ if (hpn) imports::instance().UnregisterPowerSettingNotification(hpn); };
+	const auto hpn = imports.RegisterPowerSettingNotification(m_Hwnd,&GUID_BATTERY_PERCENTAGE_REMAINING,DEVICE_NOTIFY_WINDOW_HANDLE);
+	SCOPE_EXIT{ if (hpn) imports.UnregisterPowerSettingNotification(hpn); };
 
 	MSG Msg;
 	WndProcExceptionPtr = &m_ExceptionPtr;

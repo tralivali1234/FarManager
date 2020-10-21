@@ -39,14 +39,25 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 #ifdef MEMCHECK
-void* operator new(size_t size, const char* Function, const char* File, int Line);
-void* operator new(size_t size, const std::nothrow_t& nothrow_value, const char* Function, const char* File, int Line) noexcept;
-void* operator new[](size_t size, const char* Function, const char* File, int Line);
-void* operator new[](size_t size, const std::nothrow_t& nothrow_value, const char* Function, const char* File, int Line) noexcept;
-void operator delete(void* block, const char* Function, const char* File, int Line);
-void operator delete[](void* block, const char* Function, const char* File, int Line);
 
-#define new new(__FUNCTION__, __FILE__, __LINE__)
+// Internal:
+#include "common/nifty_counter.hpp"
+
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+namespace memcheck
+{
+	class checker;
+}
+
+NIFTY_DECLARE(memcheck::checker, Checker);
+
 #endif
 
 #endif // MEMCHECK_HPP_3DC127D2_3D5C_4E0C_BFDD_6CE23AE099DB

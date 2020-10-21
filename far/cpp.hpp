@@ -36,10 +36,18 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
 #include "common/compiler.hpp"
-#include "common/preprocessor.hpp"
 
-#if COMPILER == C_GCC
+// Platform:
+
+// Common:
+
+// External:
+
+//----------------------------------------------------------------------------
+
+#if COMPILER(GCC)
 // These inline implementations in gcc/cwchar are wrong and non-compilable if _CONST_RETURN is defined.
 namespace std
 {
@@ -77,32 +85,83 @@ using std::wmemchr;
 
 #endif
 
-#if defined _MSC_VER && _MSC_VER < 1910
-namespace std
+#if COMPILER(GCC) && !defined(_GLIBCXX_HAS_GTHREADS)
+namespace std::this_thread
 {
-	namespace detail
+	inline void yield() noexcept
 	{
-		template <class F, class Tuple, size_t... I>
-		constexpr decltype(auto) apply_impl(F&& f, Tuple&& t, std::index_sequence<I...>)
-		{
-			return std::invoke(FWD(f), std::get<I>(FWD(t))...);
-		}
-	}
-
-	template <class F, class Tuple>
-	constexpr decltype(auto) apply(F&& f, Tuple&& t)
-	{
-		return detail::apply_impl(FWD(f), FWD(t), std::make_index_sequence<std::tuple_size_v<std::decay_t<Tuple>>>{});
+		Sleep(0);
 	}
 }
 #endif
 
 
-#if defined _MSC_VER && _MSC_VER < 1910
-#define DETAIL_STATIC_ASSERT_2(expression, message) static_assert(expression, message)
-#define DETAIL_STATIC_ASSERT_1(expression) DETAIL_STATIC_ASSERT_2(expression, #expression)
-#define DETAIL_STATIC_ASSERT_GET_MACRO(_1, _2, NAME, ...) NAME
-#define static_assert(...) EXPAND(DETAIL_STATIC_ASSERT_GET_MACRO(__VA_ARGS__, DETAIL_STATIC_ASSERT_2, DETAIL_STATIC_ASSERT_1)(__VA_ARGS__))
+#ifndef __cpp_lib_erase_if
+namespace std
+{
+	namespace detail
+	{
+		template<typename container, typename predicate>
+		void associative_erase_if(container& Container, const predicate& Predicate)
+		{
+			for (auto i = Container.begin(), End = Container.end(); i != End; )
+			{
+				if (Predicate(*i))
+				{
+					i = Container.erase(i);
+				}
+				else
+				{
+					++i;
+				}
+			}
+		}
+	}
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::set<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::multiset<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::map<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::multimap<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::unordered_set<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::unordered_multiset<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::unordered_map<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+
+	template <typename predicate, typename... traits>
+	void erase_if(std::unordered_multimap<traits...>& Container, predicate Predicate) { detail::associative_erase_if(Container, Predicate); }
+}
+#endif
+
+#if COMPILER(CLANG) && IS_MICROSOFT_SDK() && defined __cpp_char8_t && !defined __cpp_lib_char8_t
+namespace std
+{
+	inline namespace literals
+	{
+		inline namespace string_view_literals
+		{
+WARNING_PUSH()
+WARNING_DISABLE_CLANG("-Wuser-defined-literals")
+			[[nodiscard]]
+			constexpr basic_string_view<char8_t> operator"" sv(const char8_t* const Str, size_t const Size) noexcept
+			{
+				return { Str, Size };
+			}
+WARNING_POP()
+		}
+	}
+}
 #endif
 
 #endif // CPP_HPP_95E41B70_5DB2_4E5B_A468_95343C6438AD

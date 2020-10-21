@@ -31,10 +31,10 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "filefilter.hpp"
+
+// Internal:
 #include "filefilterparams.hpp"
 #include "keys.hpp"
 #include "ctrlobj.hpp"
@@ -42,7 +42,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "panel.hpp"
 #include "vmenu.hpp"
 #include "vmenu2.hpp"
-#include "scantree.hpp"
 #include "filelist.hpp"
 #include "message.hpp"
 #include "config.hpp"
@@ -52,39 +51,81 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "mix.hpp"
 #include "configdb.hpp"
 #include "keyboard.hpp"
-#include "DlgGuid.hpp"
+#include "uuids.far.dialogs.hpp"
 #include "lang.hpp"
+#include "string_sort.hpp"
+#include "global.hpp"
 
-static const struct
+// Platform:
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/bytes_view.hpp"
+#include "common/scope_exit.hpp"
+#include "common/view/enumerate.hpp"
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
+
+#define STR_INIT(x) x = WSTRVIEW(x)
+
+namespace names
 {
-	const string_view
-
-	Filters,
-	Filter,
-	FFlags,
-	FoldersFilterFFlags,
-
-	Title,
-	UseAttr, AttrSet, AttrClear,
-	UseMask, Mask,
-	UseDate, DateType, DateTimeAfter, DateTimeBefore, DateRelative,
-	UseSize, SizeAbove, SizeBelow,
-	UseHardLinks, HardLinksAbove, HardLinksBelow;
+	static const string_view
+		STR_INIT(Filters),
+		STR_INIT(FoldersFilter),
+		STR_INIT(Filter),
+		STR_INIT(Flags),
+		STR_INIT(Title),
+		STR_INIT(UseAttr),
+		STR_INIT(AttrSet),
+		STR_INIT(AttrClear),
+		STR_INIT(UseMask),
+		STR_INIT(Mask),
+		STR_INIT(UseDate),
+		STR_INIT(DateType),
+		STR_INIT(DateTimeAfter),
+		STR_INIT(DateTimeBefore),
+		STR_INIT(DateRelative),
+		STR_INIT(UseSize),
+		STR_INIT(SizeAboveS),
+		STR_INIT(SizeBelowS),
+		STR_INIT(UseHardLinks),
+		STR_INIT(HardLinksAbove),
+		STR_INIT(HardLinksBelow);
 }
-Strings =
-{
-	L"Filters"_sv,
-	L"Filter"_sv,
-	L"FFlags"_sv,
-	L"FoldersFilterFFlags"_sv,
 
-	L"Title"_sv,
-	L"UseAttr"_sv, L"AttrSet"_sv, L"AttrClear"_sv,
-	L"UseMask"_sv, L"Mask"_sv,
-	L"UseDate"_sv, L"DateType"_sv, L"DateTimeAfter"_sv, L"DateTimeBefore"_sv, L"DateRelative"_sv,
-	L"UseSize"_sv, L"SizeAboveS"_sv, L"SizeBelowS"_sv,
-	L"UseHardLinks"_sv, L"HardLinksAbove"_sv, L"HardLinksBelow"_sv,
+// Old format
+// TODO 2020 Q4: remove
+namespace legacy_names
+{
+	static const string_view
+		STR_INIT(FFlags),
+		STR_INIT(FoldersFilterFFlags),
+		STR_INIT(IgnoreMask),
+		STR_INIT(DateAfter),
+		STR_INIT(DateBefore),
+		STR_INIT(RelativeDate),
+		STR_INIT(IncludeAttributes),
+		STR_INIT(ExcludeAttributes);
+
+}
+
+#undef STR_INIT
+
+static const string_view FilterFlagNames[]
+{
+	L"LeftPanel"sv,
+	L"RightPanel"sv,
+	L"FindFile"sv,
+	L"Copy"sv,
+	L"Select"sv,
+	L"Custom"sv,
 };
+
+static_assert(std::size(FilterFlagNames) == FFFT_COUNT);
 
 static auto& FilterData()
 {
@@ -94,13 +135,11 @@ static auto& FilterData()
 
 static auto& TempFilterData()
 {
-	static std::vector<FileFilterParams> sTempFilterData;
+	static std::unordered_map<string, FileFilterParams, hash_icase_t, equal_icase_t> sTempFilterData;
 	return sTempFilterData;
 }
 
-FileFilterParams *FoldersFilter;
-
-static bool bMenuOpen = false;
+static FileFilterParams *FoldersFilter;
 
 static bool Changed = false;
 
@@ -111,44 +150,54 @@ FileFilter::FileFilter(Panel *HostPanel, FAR_FILE_FILTER_TYPE FilterType):
 	UpdateCurrentTime();
 }
 
-bool FileFilter::FilterEdit()
+static void ParseAndAddMasks(std::map<string, int, string_sort::less_t>& Extensions, string_view const FileName, DWORD const FileAttr, int const Check)
 {
-	if (bMenuOpen)
-		return false;
+	if ((FileAttr & FILE_ATTRIBUTE_DIRECTORY) || IsParentDirectory(FileName))
+		return;
 
-	Changed = true;
+	const auto Ext = name_ext(FileName).second;
+	Extensions.emplace(Ext.empty()? L"*."s : concat(L'*', Ext), Check);
+}
+
+void FileFilter::FilterEdit()
+{
+	static bool bMenuOpen = false;
+	if (bMenuOpen)
+		return;
 	bMenuOpen = true;
-	bool bNeedUpdate=false;
-	const auto FilterList = VMenu2::create(msg(lng::MFilterTitle), nullptr, 0, ScrY - 6);
-	FilterList->SetHelp(L"FiltersMenu"_sv);
-	FilterList->SetPosition(-1,-1,0,0);
-	FilterList->SetBottomTitle(msg(lng::MFilterBottom));
-	FilterList->SetMenuFlags(/*VMENU_SHOWAMPERSAND|*/VMENU_WRAPMODE);
+	SCOPE_EXIT{ bMenuOpen = false; };
+
+	bool NeedUpdate = false;
+
+	const auto FilterList = VMenu2::create(msg(lng::MFilterTitle), {}, ScrY - 6);
+	FilterList->SetHelp(L"FiltersMenu"sv);
+	FilterList->SetPosition({ -1, -1, 0, 0 });
+	FilterList->SetBottomTitle(KeysToLocalizedText(L'+', L'-', KEY_SPACE, L'I', L'X', KEY_BS, KEY_SHIFTBS, KEY_INS, KEY_DEL, KEY_F4, KEY_F5, KEY_CTRLUP, KEY_CTRLDOWN));
+	FilterList->SetMenuFlags(VMENU_WRAPMODE);
 	FilterList->SetId(FiltersMenuId);
 
-	std::for_each(RANGE(FilterData(), i)
+	for (auto& i: FilterData())
 	{
 		MenuItemEx ListItem(MenuString(&i));
-		ListItem.SetCheck(GetCheck(i));
+		if (const auto Check = GetCheck(i))
+			ListItem.SetCustomCheck(Check);
 		FilterList->AddItem(ListItem);
-	});
+	}
 
 	if (m_FilterType != FFT_CUSTOM)
 	{
-		using extension_list = std::list<std::pair<string, int>>;
-		extension_list Extensions;
+		std::map<string, int, string_sort::less_t> Extensions;
 
 		{
 			const auto FFFT = GetFFFT();
 
-			for (const auto& i: TempFilterData())
+			for (const auto& [Key, CurFilterData]: TempFilterData())
 			{
 				//AY: Будем показывать только те выбранные авто фильтры
 				//(для которых нету файлов на панели) которые выбраны в области данного меню
-				if (i.GetFlags(FFFT))
+				if (CurFilterData.GetFlags(FFFT))
 				{
-					if (!ParseAndAddMasks(Extensions, unquote(i.GetMask()), 0, GetCheck(i)))
-						break;
+					ParseAndAddMasks(Extensions, unquote(CurFilterData.GetMask()), 0, GetCheck(CurFilterData));
 				}
 			}
 		}
@@ -162,60 +211,50 @@ bool FileFilter::FilterEdit()
 		{
 			FoldersFilter->SetTitle(msg(lng::MFolderFileType));
 			MenuItemEx ListItem(MenuString(FoldersFilter,false,L'0'));
-			int Check = GetCheck(*FoldersFilter);
+			const auto Check = GetCheck(*FoldersFilter);
 
 			if (Check)
-				ListItem.SetCheck(Check);
+				ListItem.SetCustomCheck(Check);
 
 			FilterList->AddItem(ListItem);
 		}
 
-		if (m_HostPanel->GetMode() == panel_mode::NORMAL_PANEL)
-		{
-			string strFileName;
-			os::fs::find_data fdata;
-			ScanTree ScTree(false, false);
-			ScTree.SetFindPath(m_HostPanel->GetCurDir(), L"*");
-
-			while (ScTree.GetNextName(fdata,strFileName))
-				if (!ParseAndAddMasks(Extensions, fdata.strFileName, fdata.dwFileAttributes, 0))
-					break;
-		}
-		else
 		{
 			string strFileName;
 			DWORD FileAttr;
 
 			for (int i = 0; m_HostPanel->GetFileName(strFileName, i, FileAttr); i++)
-				if (!ParseAndAddMasks(Extensions, strFileName, FileAttr, 0))
-					break;
+				ParseAndAddMasks(Extensions, strFileName, FileAttr, 0);
+
+			if (const auto* FilteredExtensions = m_HostPanel->GetFilteredExtensions())
+			{
+				for (const auto& i: *FilteredExtensions)
+				{
+					ParseAndAddMasks(Extensions, i, 0, 0);
+				}
+			}
 		}
 
-		Extensions.sort([](const extension_list::value_type& a, const extension_list::value_type& b)
-		{
-			return less_icase{}(a.first, b.first);
-		});
-
 		wchar_t h = L'1';
-		for (const auto& i: Extensions)
+		for (const auto& [Ext, Mark]: Extensions)
 		{
-			MenuItemEx ListItem(MenuString(nullptr, false, h, true, i.first.data(), msg(lng::MPanelFileType).data()));
-			ListItem.SetCheck(i.second);
-			ListItem.UserData = i.first;
+			MenuItemEx ListItem(MenuString(nullptr, false, h, true, Ext, msg(lng::MPanelFileType)));
+			Mark? ListItem.SetCustomCheck(Mark) : ListItem.ClearCheck();
+			ListItem.ComplexUserData = Ext;
 			FilterList->AddItem(ListItem);
 
 			h == L'9' ? h = L'A' : ((h == L'Z' || !h)? h = 0 : ++h);
 		}
 	}
 
-	const auto ExitCode=FilterList->RunEx([&](int Msg, void *param)
+	FilterList->RunEx([&](int Msg, void *param)
 	{
 		if (Msg==DN_LISTHOTKEY)
 			return 1;
 		if (Msg!=DN_INPUT)
 			return 0;
 
-		int Key=InputRecordToKey(static_cast<INPUT_RECORD*>(param));
+		auto Key = InputRecordToKey(static_cast<INPUT_RECORD*>(param));
 
 		if (Key==KEY_ADD)
 			Key=L'+';
@@ -237,12 +276,12 @@ bool FileFilter::FilterEdit()
 			case KEY_SPACE:
 			case KEY_BS:
 			{
-				int SelPos=FilterList->GetSelectPos();
+				const auto SelPos = FilterList->GetSelectPos();
 
 				if (SelPos<0)
 					break;
 
-				int Check=FilterList->GetCheck(SelPos);
+				const auto Check = FilterList->GetCheck(SelPos);
 				int NewCheck;
 
 				if (Key==KEY_BS)
@@ -252,44 +291,43 @@ bool FileFilter::FilterEdit()
 				else
 					NewCheck = (Check == Key) ? 0 : Key;
 
-				FilterList->SetCheck(NewCheck,SelPos);
+				NewCheck? FilterList->SetCustomCheck(NewCheck, SelPos) : FilterList->ClearCheck();
 				FilterList->SetSelectPos(SelPos,1);
 				FilterList->Key(KEY_DOWN);
-				bNeedUpdate=true;
+				NeedUpdate = true;
 				return 1;
 			}
 			case KEY_SHIFTBS:
 			{
 				for (size_t i = 0, size = FilterList->size(); i != size; ++i)
 				{
-					FilterList->SetCheck(FALSE, static_cast<int>(i));
+					FilterList->ClearCheck(static_cast<int>(i));
 				}
-
+				NeedUpdate = true;
 				break;
 			}
 			case KEY_F4:
 			{
-				int SelPos=FilterList->GetSelectPos();
+				const auto SelPos = FilterList->GetSelectPos();
 				if (SelPos<0)
 					break;
 
-				if (SelPos<(int)FilterData().size())
+				if (static_cast<size_t>(SelPos) < FilterData().size())
 				{
 					if (FileFilterConfig(&FilterData()[SelPos]))
 					{
 						MenuItemEx ListItem(MenuString(&FilterData()[SelPos]));
-						int Check = GetCheck(FilterData()[SelPos]);
 
-						if (Check)
-							ListItem.SetCheck(Check);
+						if (const auto Check = FilterList->GetCheck(SelPos))
+							ListItem.SetCustomCheck(Check);
 
 						FilterList->DeleteItem(SelPos);
 						FilterList->AddItem(ListItem,SelPos);
 						FilterList->SetSelectPos(SelPos,1);
-						bNeedUpdate=true;
+						NeedUpdate = true;
 					}
 				}
-				else if (SelPos>(int)FilterData().size())
+				else
 				{
 					Message(MSG_WARNING,
 						msg(lng::MFilterTitle),
@@ -317,7 +355,7 @@ bool FileFilter::FilterEdit()
 
 				if (Key==KEY_F5)
 				{
-					size_t ListPos = pos;
+					const size_t ListPos = pos;
 					if (ListPos < FilterData().size())
 					{
 						NewFilter = FilterData()[ListPos].Clone();
@@ -332,7 +370,7 @@ bool FileFilter::FilterEdit()
 					}
 					else if (ListPos > FilterData().size() + 1)
 					{
-						NewFilter.SetMask(true, *FilterList->GetUserDataPtr<string>(ListPos));
+						NewFilter.SetMask(true, *FilterList->GetComplexUserDataPtr<string>(ListPos));
 						//Авто фильтры они только для файлов, папки не должны к ним подходить
 						NewFilter.SetAttr(true, 0, FILE_ATTRIBUTE_DIRECTORY);
 					}
@@ -351,21 +389,20 @@ bool FileFilter::FilterEdit()
 				{
 					const auto NewPos = std::min(FilterData().size(), static_cast<size_t>(pos));
 					const auto FilterIterator = FilterData().emplace(FilterData().begin() + NewPos, std::move(NewFilter));
-					MenuItemEx ListItem(MenuString(&*FilterIterator));
-					FilterList->AddItem(ListItem,static_cast<int>(NewPos));
+					FilterList->AddItem(MenuItemEx(MenuString(&*FilterIterator)), static_cast<int>(NewPos));
 					FilterList->SetSelectPos(static_cast<int>(NewPos),1);
-					bNeedUpdate=true;
+					NeedUpdate = true;
 				}
 				break;
 			}
 			case KEY_NUMDEL:
 			case KEY_DEL:
 			{
-				int SelPos=FilterList->GetSelectPos();
+				const auto SelPos = FilterList->GetSelectPos();
 				if (SelPos<0)
 					break;
 
-				if (SelPos<(int)FilterData().size())
+				if (static_cast<size_t>(SelPos) < FilterData().size())
 				{
 					if (Message(0,
 						msg(lng::MFilterTitle),
@@ -378,10 +415,10 @@ bool FileFilter::FilterEdit()
 						FilterData().erase(FilterData().begin() + SelPos);
 						FilterList->DeleteItem(SelPos);
 						FilterList->SetSelectPos(SelPos,1);
-						bNeedUpdate=true;
+						NeedUpdate = true;
 					}
 				}
-				else if (SelPos>(int)FilterData().size())
+				else
 				{
 					Message(MSG_WARNING,
 						msg(lng::MFilterTitle),
@@ -398,19 +435,19 @@ bool FileFilter::FilterEdit()
 			case KEY_CTRLDOWN:
 			case KEY_RCTRLDOWN:
 			{
-				int SelPos=FilterList->GetSelectPos();
+				const auto SelPos = FilterList->GetSelectPos();
 				if (SelPos<0)
 					break;
 
-				if (SelPos<(int)FilterData().size() && !((Key == KEY_CTRLUP || Key == KEY_RCTRLUP) && !SelPos) &&
-					!((Key == KEY_CTRLDOWN || Key == KEY_RCTRLDOWN) && SelPos == (int)(FilterData().size() - 1)))
+				if (static_cast<size_t>(SelPos) < FilterData().size() && !(any_of(Key, KEY_CTRLUP, KEY_RCTRLUP) && !SelPos) &&
+					!(any_of(Key, KEY_CTRLDOWN, KEY_RCTRLDOWN) && static_cast<size_t>(SelPos) == FilterData().size() - 1))
 				{
-					int NewPos = SelPos + ((Key == KEY_CTRLDOWN || Key == KEY_RCTRLDOWN) ? 1 : -1);
+					const auto NewPos = SelPos + (any_of(Key, KEY_CTRLDOWN, KEY_RCTRLDOWN)? 1 : -1);
 					using std::swap;
 					swap(FilterList->at(SelPos), FilterList->at(NewPos));
 					swap(FilterData()[NewPos], FilterData()[SelPos]);
 					FilterList->SetSelectPos(NewPos,1);
-					bNeedUpdate=true;
+					NeedUpdate = true;
 				}
 
 				break;
@@ -422,24 +459,21 @@ bool FileFilter::FilterEdit()
 		return KeyProcessed;
 	});
 
+	if (!NeedUpdate)
+		return;
 
-	if (ExitCode!=-1)
-		ProcessSelection(FilterList.get());
+	Changed = true;
+
+	ProcessSelection(FilterList.get());
 
 	if (Global->Opt->AutoSaveSetup)
 		Save(false);
 
-	if (ExitCode!=-1 || bNeedUpdate)
+	if (m_FilterType == FFT_PANEL)
 	{
-		if (m_FilterType == FFT_PANEL)
-		{
-			m_HostPanel->Update(UPDATE_KEEP_SELECTION);
-			m_HostPanel->Refresh();
-		}
+		m_HostPanel->Update(UPDATE_KEEP_SELECTION);
+		m_HostPanel->Refresh();
 	}
-
-	bMenuOpen = false;
-	return ExitCode != -1;
 }
 
 enumFileFilterFlagsType FileFilter::GetFFFT() const
@@ -457,24 +491,15 @@ enumFileFilterFlagsType FileFilter::GetFFFT() const
 	}
 }
 
-int FileFilter::GetCheck(const FileFilterParams& FFP) const
+wchar_t FileFilter::GetCheck(const FileFilterParams& FFP) const
 {
-	DWORD Flags = FFP.GetFlags(GetFFFT());
+	const auto Flags = FFP.GetFlags(GetFFFT());
 
-	if (Flags&FFF_INCLUDE)
-	{
-		if (Flags&FFF_STRONG)
-			return L'I';
+	if (Flags & FFF_INCLUDE)
+		return Flags & FFF_STRONG? L'I' : L'+';
 
-		return L'+';
-	}
-	else if (Flags&FFF_EXCLUDE)
-	{
-		if (Flags&FFF_STRONG)
-			return L'X';
-
-		return L'-';
-	}
+	if (Flags & FFF_EXCLUDE)
+		return Flags & FFF_STRONG? L'X' : L'-';
 
 	return 0;
 }
@@ -483,9 +508,9 @@ void FileFilter::ProcessSelection(VMenu2 *FilterList) const
 {
 	const auto FFFT = GetFFFT();
 
-	for (size_t i = 0, j = 0, size = FilterList->size(); i != size; ++i)
+	for (size_t i = 0, size = FilterList->size(); i != size; ++i)
 	{
-		int Check = FilterList->GetCheck(static_cast<int>(i));
+		const auto Check = FilterList->GetCheck(static_cast<int>(i));
 		FileFilterParams* CurFilterData = nullptr;
 
 		if (i < FilterData().size())
@@ -498,73 +523,46 @@ void FileFilter::ProcessSelection(VMenu2 *FilterList) const
 		}
 		else if (i > FilterData().size() + 1)
 		{
-			const auto& Mask = *FilterList->GetUserDataPtr<string>(i);
-			//AY: Так как в меню мы показываем только те выбранные авто фильтры
-			//которые выбраны в области данного меню и TempFilterData вполне
-			//может содержать маску которую тока что выбрали в этом меню но
-			//она уже была выбрана в другом и так как TempFilterData
-			//и авто фильтры в меню отсортированы по алфавиту то немного
-			//поколдуем чтоб не было дубликатов в памяти.
-			const auto strMask1 = unquote(Mask);
-
-			while (j < TempFilterData().size())
+			const auto& Mask = *FilterList->GetComplexUserDataPtr<string>(i);
+			if (const auto Iterator = TempFilterData().find(Mask); Iterator != TempFilterData().cend())
 			{
-				CurFilterData = &TempFilterData()[j];
-				const auto strMask2 = unquote(CurFilterData->GetMask());
-
-				if (StrCmpI(strMask1, strMask2) < 1)
-					break;
-
-				j++;
-			}
-
-			if (CurFilterData)
-			{
-				if (equal_icase(Mask, CurFilterData->GetMask()))
+				if (!Check)
 				{
-					if (!Check)
+					bool bCheckedNowhere = true;
+
+					for (int n = 0; n != FFFT_COUNT; ++n)
 					{
-						bool bCheckedNowhere = true;
-
-						for (int n = FFFT_FIRST; n < FFFT_COUNT; n++)
+						if (n != FFFT && Iterator->second.GetFlags(static_cast<enumFileFilterFlagsType>(n)))
 						{
-							if (n != FFFT && CurFilterData->GetFlags((enumFileFilterFlagsType)n))
-							{
-								bCheckedNowhere = false;
-								break;
-							}
-						}
-
-						if (bCheckedNowhere)
-						{
-							TempFilterData().erase(TempFilterData().begin() + j);
-							continue;
+							bCheckedNowhere = false;
+							break;
 						}
 					}
-					else
+
+					if (bCheckedNowhere)
 					{
-						j++;
+						TempFilterData().erase(Iterator);
+						continue;
 					}
 				}
-				else
-					CurFilterData = nullptr;
-			}
 
-			if (Check && !CurFilterData)
+				CurFilterData = &Iterator->second;
+			}
+			else if (Check)
 			{
 				FileFilterParams NewFilter;
-				NewFilter.SetMask(true, Mask);
+				NewFilter.SetMask(true, Mask.find_first_of(L",;"sv, L"*."sv.size()) == string::npos? Mask : quote(Mask));
 				//Авто фильтры они только для файлов, папки не должны к ним подходить
 				NewFilter.SetAttr(true, 0, FILE_ATTRIBUTE_DIRECTORY);
-				CurFilterData = &*TempFilterData().emplace(TempFilterData().begin() + j, std::move(NewFilter));
-				j++;
+				auto NewIterator = TempFilterData().emplace(Mask, std::move(NewFilter)).first;
+				CurFilterData = &NewIterator->second;
 			}
 		}
 
 		if (!CurFilterData)
 			continue;
 
-		const auto& KeyToFlags = [](int Key) -> DWORD
+		const auto KeyToFlags = [](int Key) -> DWORD
 		{
 			switch (Key)
 			{
@@ -588,30 +586,20 @@ void FileFilter::UpdateCurrentTime()
 
 bool FileFilter::FileInFilter(const FileListItem* fli, filter_status* FilterStatus)
 {
-	os::fs::find_data fde;
-	fde.dwFileAttributes=fli->FileAttr;
-	fde.CreationTime = fli->CreationTime;
-	fde.LastAccessTime = fli->AccessTime;
-	fde.LastWriteTime = fli->WriteTime;
-	fde.ChangeTime = fli->ChangeTime;
-	fde.nFileSize=fli->FileSize;
-	fde.nAllocationSize=fli->AllocationSize;
-	fde.strFileName=fli->strName;
-	fde.strAlternateFileName=fli->strShortName;
-	return FileInFilter(fde, FilterStatus, &fli->strName);
+	return FileInFilter(*fli, FilterStatus, fli->FileName);
 }
 
-bool FileFilter::FileInFilter(const os::fs::find_data& fde, filter_status* FilterStatus, const string* FullName)
+bool FileFilter::FileInFilter(const os::fs::find_data& fde, filter_status* const FilterStatus, string_view const FullName)
 {
 	const auto FFFT = GetFFFT();
-	const auto bFolder = (fde.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	const auto bFolder = (fde.Attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
 	auto IsFound = false;
 	auto IsAnyIncludeFound = false;
 	auto IsAnyFolderIncludeFound = false;
 	auto IsIncluded = false;
 
-	const auto& ProcessFilters = [&]
+	const auto ProcessFilters = [&]
 	{
 		for (const auto& CurFilterData : FilterData())
 		{
@@ -642,7 +630,7 @@ bool FileFilter::FileInFilter(const os::fs::find_data& fde, filter_status* Filte
 		return true;
 	};
 
-	const auto& ProcessFoldersAutoFilter = [&]
+	const auto ProcessFoldersAutoFilter = [&]
 	{
 		if (FFFT == FFFT_CUSTOM)
 			return true;
@@ -669,9 +657,9 @@ bool FileFilter::FileInFilter(const os::fs::find_data& fde, filter_status* Filte
 		return true;
 	};
 
-	const auto& ProcessAutoFilters = [&]
+	const auto ProcessAutoFilters = [&]
 	{
-		for (const auto& CurFilterData : TempFilterData())
+		for (const auto& [Key, CurFilterData]: TempFilterData())
 		{
 			const auto Flags = CurFilterData.GetFlags(FFFT);
 
@@ -727,7 +715,7 @@ bool FileFilter::FileInFilter(const PluginPanelItem& fd, filter_status* FilterSt
 {
 	os::fs::find_data fde;
 	PluginPanelItemToFindDataEx(fd, fde);
-	return FileInFilter(fde, FilterStatus, &fde.strFileName);
+	return FileInFilter(fde, FilterStatus, fde.FileName);
 }
 
 bool FileFilter::IsEnabledOnPanel()
@@ -743,170 +731,244 @@ bool FileFilter::IsEnabledOnPanel()
 	if (FoldersFilter->GetFlags(FFFT))
 		return true;
 
-	return std::any_of(CONST_RANGE(TempFilterData(), i) { return i.GetFlags(FFFT); });
+	return std::any_of(CONST_RANGE(TempFilterData(), i) { return i.second.GetFlags(FFFT); });
 }
 
-void FileFilter::LoadFilter(const HierarchicalConfig* cfg, unsigned long long KeyId, FileFilterParams& Item, bool& OldFormat)
+FileFilterParams FileFilter::LoadFilter(/*const*/ HierarchicalConfig& cfg, unsigned long long KeyId)
 {
-	HierarchicalConfig::key Key(KeyId);
+	FileFilterParams Item;
 
-	string Title;
-	cfg->GetValue(Key, Strings.Title, Title);
-	Item.SetTitle(Title);
+	const HierarchicalConfig::key Key(KeyId);
+
+	Item.SetTitle(cfg.GetValue<string>(Key, names::Title));
 
 	unsigned long long UseMask = 1;
-	if (!cfg->GetValue(Key, Strings.UseMask, UseMask))
+	if (!cfg.GetValue(Key, names::UseMask, UseMask))
 	{
-		// TODO 2018 Q4: remove
+		// Old format
+		// TODO 2020 Q4: remove
 		unsigned long long IgnoreMask = 0;
-		if (cfg->GetValue(Key, L"IgnoreMask"_sv, IgnoreMask))
-			OldFormat = true;
-		UseMask = !IgnoreMask;
+		if (cfg.GetValue(Key, legacy_names::IgnoreMask, IgnoreMask))
+		{
+			UseMask = !IgnoreMask;
+			cfg.SetValue(Key, names::UseMask, UseMask);
+			cfg.DeleteValue(Key, legacy_names::IgnoreMask);
+		}
 	}
 
-	string Mask;
-	cfg->GetValue(Key, Strings.Mask, Mask);
-	Item.SetMask(UseMask != 0, Mask);
+	Item.SetMask(UseMask != 0, cfg.GetValue<string>(Key, names::Mask));
 
 	unsigned long long DateAfter = 0;
-	if (!cfg->GetValue(Key, Strings.DateTimeAfter, DateAfter))
+	if (!cfg.GetValue(Key, names::DateTimeAfter, DateAfter))
 	{
-		// TODO 2018 Q4: remove
-		if (cfg->GetValue(Key, L"DateAfter"_sv, bytes::reference(DateAfter)))
-			OldFormat = true;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (bytes Blob; cfg.GetValue(Key, legacy_names::DateAfter, Blob) && deserialise(Blob, DateAfter))
+		{
+			cfg.SetValue(Key, names::DateTimeAfter, DateAfter);
+			cfg.DeleteValue(Key, legacy_names::DateAfter);
+		}
 	}
 
 	unsigned long long DateBefore = 0;
-	if (!cfg->GetValue(Key, Strings.DateTimeBefore, DateBefore))
+	if (!cfg.GetValue(Key, names::DateTimeBefore, DateBefore))
 	{
-		// TODO 2018 Q4: remove
-		if (cfg->GetValue(Key, L"DateBefore"_sv, bytes::reference(DateBefore)))
-			OldFormat = true;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (bytes Blob; cfg.GetValue(Key, legacy_names::DateBefore, Blob) && deserialise(Blob, DateBefore))
+		{
+			cfg.SetValue(Key, names::DateTimeBefore, DateBefore);
+			cfg.DeleteValue(Key, legacy_names::DateBefore);
+		}
 	}
 
-	unsigned long long UseDate = 0;
-	cfg->GetValue(Key, Strings.UseDate, UseDate);
-
-	unsigned long long DateType = 0;
-	cfg->GetValue(Key, Strings.DateType, DateType);
+	const auto UseDate = cfg.GetValue<bool>(Key, names::UseDate);
+	const auto DateType = cfg.GetValue<unsigned long long>(Key, names::DateType);
 
 	unsigned long long DateRelative = 0;
-	if (!cfg->GetValue(Key, Strings.DateRelative, DateRelative))
+	if (!cfg.GetValue(Key, names::DateRelative, DateRelative))
 	{
-		// TODO 2018 Q4: remove
-		if (cfg->GetValue(Key, L"RelativeDate"_sv, DateRelative))
-			OldFormat = true;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (cfg.GetValue(Key, legacy_names::RelativeDate, DateRelative))
+		{
+			cfg.SetValue(Key, names::DateRelative, DateRelative);
+			cfg.DeleteValue(Key, legacy_names::RelativeDate);
+		}
 	}
 
-	Item.SetDate(UseDate != 0, static_cast<enumFDateType>(DateType), DateRelative?
-		filter_dates(os::chrono::duration(DateAfter), os::chrono::duration(DateBefore)) :
-		filter_dates(os::chrono::time_point(os::chrono::duration(DateAfter)), os::chrono::time_point(os::chrono::duration(DateBefore))));
+	Item.SetDate(UseDate, static_cast<enumFDateType>(DateType), DateRelative?
+		filter_dates(os::chrono::hectonanoseconds(DateAfter), os::chrono::hectonanoseconds(DateBefore)) :
+		filter_dates(os::chrono::nt_clock::from_hectonanoseconds(DateAfter), os::chrono::nt_clock::from_hectonanoseconds(DateBefore)));
 
-	string SizeAbove;
-	cfg->GetValue(Key, Strings.SizeAbove, SizeAbove);
+	const auto UseSize = cfg.GetValue<bool>(Key, names::UseSize);
 
-	string SizeBelow;
-	cfg->GetValue(Key, Strings.SizeBelow, SizeBelow);
+	const auto SizeAbove = cfg.GetValue<string>(Key, names::SizeAboveS);
+	const auto SizeBelow = cfg.GetValue<string>(Key, names::SizeBelowS);
+	Item.SetSize(UseSize, SizeAbove, SizeBelow);
 
-	unsigned long long UseSize = 0;
-	cfg->GetValue(Key, Strings.UseSize, UseSize);
-	Item.SetSize(UseSize != 0, SizeAbove, SizeBelow);
-
-	unsigned long long UseHardLinks = 0;
-	cfg->GetValue(Key, Strings.UseHardLinks, UseHardLinks);
-
-	unsigned long long HardLinksAbove = 0;
-	cfg->GetValue(Key, Strings.HardLinksAbove, HardLinksAbove);
-
-	unsigned long long HardLinksBelow = 0;
-	cfg->GetValue(Key, Strings.HardLinksBelow, HardLinksBelow);
-
-	Item.SetHardLinks(UseHardLinks != 0, HardLinksAbove, HardLinksBelow);
+	const auto UseHardLinks = cfg.GetValue<bool>(Key, names::UseHardLinks);
+	const auto HardLinksAbove = cfg.GetValue<unsigned long long>(Key, names::HardLinksAbove);
+	const auto HardLinksBelow = cfg.GetValue<unsigned long long>(Key, names::HardLinksBelow);
+	Item.SetHardLinks(UseHardLinks, HardLinksAbove, HardLinksBelow);
 
 	unsigned long long AttrSet = 0;
-	if (!cfg->GetValue(Key, Strings.AttrSet, AttrSet))
+	if (!cfg.GetValue(Key, names::AttrSet, AttrSet))
 	{
-		// TODO 2018 Q4: remove
-		if (cfg->GetValue(Key, L"IncludeAttributes"_sv, AttrSet))
-			OldFormat = true;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (cfg.GetValue(Key, legacy_names::IncludeAttributes, AttrSet))
+		{
+			cfg.SetValue(Key, names::AttrSet, AttrSet);
+			cfg.DeleteValue(Key, legacy_names::IncludeAttributes);
+		}
 	}
 
 	unsigned long long AttrClear = 0;
-	if (!cfg->GetValue(Key, Strings.AttrClear, AttrClear))
+	if (!cfg.GetValue(Key, names::AttrClear, AttrClear))
 	{
-		// TODO 2018 Q4: remove
-		if (cfg->GetValue(Key, L"ExcludeAttributes"_sv, AttrClear))
-			OldFormat = true;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (cfg.GetValue(Key, legacy_names::ExcludeAttributes, AttrClear))
+		{
+			cfg.SetValue(Key, names::AttrClear, AttrClear);
+			cfg.DeleteValue(Key, legacy_names::ExcludeAttributes);
+		}
 	}
 
 	unsigned long long UseAttr = 0;
-	if (!cfg->GetValue(Key, Strings.UseAttr, UseAttr))
+	if (!cfg.GetValue(Key, names::UseAttr, UseAttr))
 	{
-		// TODO 2018 Q4: remove
+		// Old format
+		// TODO 2020 Q4: remove
 		if (AttrSet || AttrClear)
 		{
 			UseAttr = true;
-			OldFormat = true;
+			cfg.SetValue(Key, names::UseAttr, UseAttr);
 		}
 	}
 
 	Item.SetAttr(UseAttr != 0, static_cast<DWORD>(AttrSet), static_cast<DWORD>(AttrClear));
+
+	return Item;
+}
+
+static void SaveFlags(const HierarchicalConfigUniquePtr& Cfg, HierarchicalConfig::key const FilterKey, const FileFilterParams& Item)
+{
+	const auto FlagsKey = Cfg->CreateKey(FilterKey, names::Flags);
+
+	for (size_t i = 0; i != std::size(FilterFlagNames); ++i)
+	{
+		Cfg->SetValue(FlagsKey, FilterFlagNames[i], Item.GetFlags(static_cast<enumFileFilterFlagsType>(i)));
+	}
+}
+
+static bool LoadFlags(const HierarchicalConfigUniquePtr& Cfg, HierarchicalConfig::key const FilterKey, FileFilterParams& Item)
+{
+	const auto FlagsKey = Cfg->FindByName(FilterKey, names::Flags);
+	if (!FlagsKey)
+		return false;
+
+	auto AnyLoaded = false;
+
+	for (size_t i = 0; i != std::size(FilterFlagNames); ++i)
+	{
+		unsigned long long Value;
+		if (Cfg->GetValue(FlagsKey, FilterFlagNames[i], Value))
+		{
+			AnyLoaded = true;
+			Item.SetFlags(static_cast<enumFileFilterFlagsType>(i), Value);
+		}
+	}
+
+	return AnyLoaded;
+}
+
+// Old format
+// TODO 2020 Q4: remove
+static bool LoadLegacyFlags(const HierarchicalConfigUniquePtr& Cfg, HierarchicalConfig::key const Key, string_view const Name, FileFilterParams& Item)
+{
+	const auto LegacyCount = FFFT_CUSTOM + 1;
+	static_assert(FFFT_COUNT >= LegacyCount);
+
+	DWORD LegacyFlags[LegacyCount]{};
+	if (bytes Blob; !Cfg->GetValue(Key, Name, Blob) || !deserialise(Blob, LegacyFlags))
+		return false;
+
+	for (int i = 0; i != LegacyCount; ++i)
+		Item.SetFlags(static_cast<enumFileFilterFlagsType>(i), LegacyFlags[i]);
+
+	return true;
 }
 
 void FileFilter::InitFilter()
 {
 	static FileFilterParams _FoldersFilter;
 	FoldersFilter = &_FoldersFilter;
-	FoldersFilter->SetMask(false, L"*");
+	FoldersFilter->SetMask(false, L"*"sv);
 	FoldersFilter->SetAttr(true, FILE_ATTRIBUTE_DIRECTORY, 0);
 
 	const auto cfg = ConfigProvider().CreateFiltersConfig();
-	const auto root = cfg->FindByName(cfg->root_key(), Strings.Filters);
+	const auto root = cfg->FindByName(cfg->root_key, names::Filters);
 
 	if (!root)
 		return;
 
-	const auto& LoadFlags = [](const auto& cfg, const auto& Key, const auto& Name, auto& Item)
+	if (const auto FoldersFilterKey = cfg->FindByName(root, names::FoldersFilter))
 	{
-		DWORD Flags[FFFT_COUNT]{};
-		cfg->GetValue(Key, Name, bytes::reference(Flags));
-
-		for (DWORD i = FFFT_FIRST; i < FFFT_COUNT; i++)
-			Item.SetFlags(static_cast<enumFileFilterFlagsType>(i), Flags[i]);
-	};
-
-	LoadFlags(cfg, root, Strings.FoldersFilterFFlags, *FoldersFilter);
-
-	for (;;)
+		LoadFlags(cfg, FoldersFilterKey, *FoldersFilter);
+	}
+	else
 	{
-		const auto key = cfg->FindByName(root, Strings.Filter + str(FilterData().size()));
-		if (!key)
-			break;
+		// Old format
+		// TODO 2020 Q4: remove
+		if (LoadLegacyFlags(cfg, root, legacy_names::FoldersFilterFFlags, *FoldersFilter))
+		{
+			SaveFlags(cfg, cfg->CreateKey(root, names::FoldersFilter), *FoldersFilter);
+			cfg->DeleteValue(root, legacy_names::FoldersFilterFFlags);
+		}
+	}
 
-		FileFilterParams NewItem;
-		LoadFilter(cfg.get(), key.get(), NewItem, Changed);
-		LoadFlags(cfg, key, Strings.FFlags, NewItem);
+	for (const auto& Key: cfg->KeysEnumerator(root, names::Filter))
+	{
+		auto NewItem = LoadFilter(*cfg, Key.get());
+
+		if (!LoadFlags(cfg, Key, NewItem))
+		{
+			// Old format
+			// TODO 2020 Q4: remove
+			if (LoadLegacyFlags(cfg, Key, legacy_names::FFlags, NewItem))
+			{
+				SaveFlags(cfg, Key, NewItem);
+				cfg->DeleteValue(Key, legacy_names::FFlags);
+			}
+		}
+
 		FilterData().emplace_back(std::move(NewItem));
 	}
 
-	for (;;)
+	for (const auto& Key: cfg->KeysEnumerator(root, L"PanelMask"sv))
 	{
-		const auto key = cfg->FindByName(root, L"PanelMask"_sv + str(TempFilterData().size()));
-		if (!key)
-			break;
-
 		FileFilterParams NewItem;
 
-		string Mask;
-		cfg->GetValue(key, Strings.Mask, Mask);
+		auto Mask = cfg->GetValue<string>(Key, names::Mask);
 		NewItem.SetMask(true, Mask);
 
 		//Авто фильтры они только для файлов, папки не должны к ним подходить
 		NewItem.SetAttr(true, 0, FILE_ATTRIBUTE_DIRECTORY);
 
-		LoadFlags(cfg, key, Strings.FFlags, NewItem);
+		if (!LoadFlags(cfg, Key, NewItem))
+		{
+			// Old format
+			// TODO 2020 Q4: remove
+			if (LoadLegacyFlags(cfg, Key, legacy_names::FFlags, NewItem))
+			{
+				SaveFlags(cfg, Key, NewItem);
+				cfg->DeleteValue(Key, legacy_names::FFlags);
+			}
+		}
 
-		TempFilterData().emplace_back(std::move(NewItem));
+		TempFilterData().emplace(unquote(std::move(Mask)), std::move(NewItem));
 	}
 }
 
@@ -917,71 +979,48 @@ void FileFilter::CloseFilter()
 	TempFilterData().clear();
 }
 
-void FileFilter::SaveFilter(HierarchicalConfig *cfg, unsigned long long KeyId, const FileFilterParams& Item)
+void FileFilter::SaveFilter(HierarchicalConfig& cfg, unsigned long long KeyId, const FileFilterParams& Item)
 {
 	HierarchicalConfig::key Key(KeyId);
 
-	cfg->SetValue(Key, Strings.Title, Item.GetTitle());
-	cfg->SetValue(Key, Strings.UseMask, Item.IsMaskUsed());
-
-	// TODO 2018 Q2: remove
-	cfg->SetValue(Key, L"IgnoreMask"_sv, !Item.IsMaskUsed());
-
-	cfg->SetValue(Key, Strings.Mask, Item.GetMask());
+	cfg.SetValue(Key, names::Title, Item.GetTitle());
+	cfg.SetValue(Key, names::UseMask, Item.IsMaskUsed());
+	cfg.SetValue(Key, names::Mask, Item.GetMask());
 
 	DWORD DateType;
 	filter_dates Dates;
-	cfg->SetValue(Key, Strings.UseDate, Item.GetDate(&DateType, &Dates));
-	cfg->SetValue(Key, Strings.DateType, DateType);
+	cfg.SetValue(Key, names::UseDate, Item.GetDate(&DateType, &Dates));
+	cfg.SetValue(Key, names::DateType, DateType);
 
 	Dates.visit(overload
-	(
+	{
 		[&](os::chrono::duration After, os::chrono::duration Before)
 		{
-			cfg->SetValue(Key, Strings.DateTimeAfter, After.count());
-			cfg->SetValue(Key, Strings.DateTimeBefore, Before.count());
-			cfg->SetValue(Key, Strings.DateRelative, true);
-
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"DateAfter"_sv, bytes_view(After.count()));
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"DateBefore"_sv, bytes_view(Before.count()));
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"RelativeDate"_sv, true);
+			cfg.SetValue(Key, names::DateTimeAfter, os::chrono::nt_clock::to_hectonanoseconds(After));
+			cfg.SetValue(Key, names::DateTimeBefore, os::chrono::nt_clock::to_hectonanoseconds(Before));
+			cfg.SetValue(Key, names::DateRelative, true);
 		},
 		[&](os::chrono::time_point After, os::chrono::time_point Before)
 		{
-			cfg->SetValue(Key, Strings.DateTimeAfter, After.time_since_epoch().count());
-			cfg->SetValue(Key, Strings.DateTimeBefore, Before.time_since_epoch().count());
-			cfg->SetValue(Key, Strings.DateRelative, false);
-
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"DateAfter"_sv, bytes_view(After.time_since_epoch().count()));
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"DateBefore"_sv, bytes_view(Before.time_since_epoch().count()));
-			// TODO 2018 Q2: remove
-			cfg->SetValue(Key, L"RelativeDate"_sv, false);
+			cfg.SetValue(Key, names::DateTimeAfter, os::chrono::nt_clock::to_hectonanoseconds(After));
+			cfg.SetValue(Key, names::DateTimeBefore, os::chrono::nt_clock::to_hectonanoseconds(Before));
+			cfg.SetValue(Key, names::DateRelative, false);
 		}
-	));
+	});
 
-	cfg->SetValue(Key, Strings.UseSize, Item.IsSizeUsed());
-	cfg->SetValue(Key, Strings.SizeAbove, Item.GetSizeAbove());
-	cfg->SetValue(Key, Strings.SizeBelow, Item.GetSizeBelow());
+	cfg.SetValue(Key, names::UseSize, Item.IsSizeUsed());
+	cfg.SetValue(Key, names::SizeAboveS, Item.GetSizeAbove());
+	cfg.SetValue(Key, names::SizeBelowS, Item.GetSizeBelow());
 
 	DWORD HardLinksAbove,HardLinksBelow;
-	cfg->SetValue(Key, Strings.UseHardLinks, Item.GetHardLinks(&HardLinksAbove,&HardLinksBelow)? 1 : 0);
-	cfg->SetValue(Key, Strings.HardLinksAbove, HardLinksAbove);
-	cfg->SetValue(Key, Strings.HardLinksBelow, HardLinksBelow);
+	cfg.SetValue(Key, names::UseHardLinks, Item.GetHardLinks(&HardLinksAbove,&HardLinksBelow)? 1 : 0);
+	cfg.SetValue(Key, names::HardLinksAbove, HardLinksAbove);
+	cfg.SetValue(Key, names::HardLinksBelow, HardLinksBelow);
 
 	DWORD AttrSet, AttrClear;
-	cfg->SetValue(Key, Strings.UseAttr, Item.GetAttr(&AttrSet, &AttrClear));
-	cfg->SetValue(Key, Strings.AttrSet, AttrSet);
-	cfg->SetValue(Key, Strings.AttrClear, AttrClear);
-
-	// TODO 2018 Q2: remove
-	cfg->SetValue(Key, L"IncludeAttributes"_sv, AttrSet);
-	// TODO 2018 Q2: remove
-	cfg->SetValue(Key, L"ExcludeAttributes"_sv, AttrClear);
+	cfg.SetValue(Key, names::UseAttr, Item.GetAttr(&AttrSet, &AttrClear));
+	cfg.SetValue(Key, names::AttrSet, AttrSet);
+	cfg.SetValue(Key, names::AttrClear, AttrClear);
 }
 
 void FileFilter::Save(bool always)
@@ -989,59 +1028,40 @@ void FileFilter::Save(bool always)
 	if (!always && !Changed)
 		return;
 
-	Changed = false;
-
 	const auto cfg = ConfigProvider().CreateFiltersConfig();
 
-	auto root = cfg->FindByName(cfg->root_key(), Strings.Filters);
-	if (root)
-		cfg->DeleteKeyTree(root);
+	SCOPED_ACTION(auto)(cfg->ScopedTransaction());
 
-	root = cfg->CreateKey(cfg->root_key(), Strings.Filters);
-	if (!root)
-		return;
+	if (const auto Key = cfg->FindByName(cfg->root_key, names::Filters))
+		cfg->DeleteKeyTree(Key);
 
-	const auto& SaveFlags = [](const auto& cfg, const auto& Key, const auto& Name, const auto& Item)
-	{
-		DWORD Flags[FFFT_COUNT];
-
-		for (DWORD j = FFFT_FIRST; j < FFFT_COUNT; j++)
-			Flags[j] = Item.GetFlags(static_cast<enumFileFilterFlagsType>(j));
-
-		cfg->SetValue(Key, Name, bytes_view(Flags));
-	};
+	const auto root = cfg->CreateKey(cfg->root_key, names::Filters);
 
 	for (size_t i=0; i<FilterData().size(); ++i)
 	{
-		const auto Key = cfg->CreateKey(root, Strings.Filter + str(i));
-		if (!Key)
-			break;
-
+		const auto Key = cfg->CreateKey(root, names::Filter + str(i));
 		const auto& CurFilterData = FilterData()[i];
 
-		SaveFilter(cfg.get(), Key.get(), CurFilterData);
-		SaveFlags(cfg, Key, Strings.FFlags, CurFilterData);
+		SaveFilter(*cfg, Key.get(), CurFilterData);
+		SaveFlags(cfg, Key, CurFilterData);
 	}
 
-	for (size_t i=0; i<TempFilterData().size(); ++i)
+	for (const auto& [CurFilterData, i]: enumerate(TempFilterData()))
 	{
-		const auto Key = cfg->CreateKey(root, L"PanelMask"_sv + str(i));
-		if (!Key)
-			break;
-
-		const auto& CurFilterData = TempFilterData()[i];
-
-		cfg->SetValue(Key, Strings.Mask, CurFilterData.GetMask());
-		SaveFlags(cfg, Key, Strings.FFlags, CurFilterData);
+		const auto Key = cfg->CreateKey(root, L"PanelMask"sv + str(i));
+		cfg->SetValue(Key, names::Mask, CurFilterData.second.GetMask());
+		SaveFlags(cfg, Key, CurFilterData.second);
 	}
 
-	SaveFlags(cfg, root, Strings.FoldersFilterFFlags, *FoldersFilter);
+	SaveFlags(cfg, cfg->CreateKey(root, names::FoldersFilter), *FoldersFilter);
+
+	Changed = false;
 }
 
-void FileFilter::SwapPanelFlags(FileFilterParams& CurFilterData)
+static void SwapPanelFlags(FileFilterParams& CurFilterData)
 {
-	DWORD LPFlags = CurFilterData.GetFlags(FFFT_LEFTPANEL);
-	DWORD RPFlags = CurFilterData.GetFlags(FFFT_RIGHTPANEL);
+	const auto LPFlags = CurFilterData.GetFlags(FFFT_LEFTPANEL);
+	const auto RPFlags = CurFilterData.GetFlags(FFFT_RIGHTPANEL);
 	CurFilterData.SetFlags(FFFT_LEFTPANEL,  RPFlags);
 	CurFilterData.SetFlags(FFFT_RIGHTPANEL, LPFlags);
 }
@@ -1049,33 +1069,12 @@ void FileFilter::SwapPanelFlags(FileFilterParams& CurFilterData)
 void FileFilter::SwapFilter()
 {
 	Changed = true;
-	std::for_each(ALL_RANGE(FilterData()), SwapPanelFlags);
+
+	for (auto& i: FilterData())
+		SwapPanelFlags(i);
+
 	SwapPanelFlags(*FoldersFilter);
-	std::for_each(ALL_RANGE(TempFilterData()), SwapPanelFlags);
-}
 
-int FileFilter::ParseAndAddMasks(std::list<std::pair<string, int>>& Extensions, const string& FileName, DWORD FileAttr, int Check)
-{
-	if (FileName == L"." || TestParentFolderName(FileName) || (FileAttr & FILE_ATTRIBUTE_DIRECTORY))
-		return -1;
-
-	const auto DotPos = FileName.rfind(L'.');
-	string strMask;
-
-	if (DotPos == string::npos)
-	{
-		strMask = L"*.";
-	}
-	else
-	{
-		const auto Ext = string_view(FileName).substr(DotPos);
-		// Если маска содержит разделитель (',' или ';'), то возьмем ее в кавычки
-		strMask = FileName.find_first_of(L",;", DotPos) != string::npos? concat(L"\"*"_sv, Ext, L'"') : concat(L'*', Ext);
-	}
-
-	if (std::any_of(CONST_RANGE(Extensions, i) { return equal_icase(i.first, strMask); }))
-		return -1;
-
-	Extensions.emplace_back(strMask, Check);
-	return 1;
+	for (auto& i: TempFilterData())
+		SwapPanelFlags(i.second);
 }

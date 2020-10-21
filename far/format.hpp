@@ -34,11 +34,25 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+// Internal:
+
+// Platform:
+
+// Common:
+#include "common/preprocessor.hpp"
+
+// External:
+
+//----------------------------------------------------------------------------
+
 WARNING_PUSH(3)
 
-#include "thirdparty/fmt/format.h"
-#include "thirdparty/fmt/string.h"
-#include "thirdparty/fmt/ostream.h"
+WARNING_DISABLE_GCC("-Wctor-dtor-privacy")
+
+WARNING_DISABLE_CLANG("-Weverything")
+
+#include "thirdparty/fmt/fmt/format.h"
+#include "thirdparty/fmt/fmt/ostream.h"
 
 WARNING_POP()
 
@@ -48,27 +62,51 @@ auto format(F&& Format, args&&... Args)
 	return fmt::format(FWD(Format), FWD(Args)...);
 }
 
-template<typename T>
-auto str(T&& Value)
+template<typename I, typename F, typename... args>
+auto format_to(I&& Iterator, F&& Format, args&&... Args)
 {
-	return fmt::to_wstring(FWD(Value));
+	return fmt::format_to(FWD(Iterator), FWD(Format), FWD(Args)...);
 }
 
-template<typename T>
-auto str(const T* Value)
+template<typename F, typename... args>
+auto format_to(string& Str, F&& Format, args&&... Args)
 {
-	return format(L"0x{0:0{1}X}", reinterpret_cast<uintptr_t>(Value), sizeof(Value) * 2);
+	return fmt::format_to(std::back_inserter(Str), FWD(Format), FWD(Args)...);
 }
 
+// use FSTR or string_view instead of string literals
+template<typename char_type, size_t N, typename... args>
+auto format(const char_type(&Format)[N], args&&...) = delete;
+
+template<typename I, typename char_type, size_t N, typename... args>
+auto format_to(I&&, const char_type(&Format)[N], args&&...) = delete;
+
+template<typename char_type, size_t N, typename... args>
+auto format_to(string&, const char_type(&Format)[N], args&&...) = delete;
+
+#define FSTR(str) FMT_STRING(str ## sv)
+
 template<typename T>
-auto str(T* Value)
+auto str(const T& Value)
 {
-	return str(static_cast<const T*>(Value));
+	return fmt::to_wstring(Value);
+}
+
+inline auto str(const void* Value)
+{
+	return format(FSTR(L"0x{0:0{1}X}"), reinterpret_cast<uintptr_t>(Value), sizeof(Value) * 2);
+}
+
+inline auto str(void* Value)
+{
+	return str(static_cast<void const*>(Value));
 }
 
 string str(const char*) = delete;
 string str(const wchar_t*) = delete;
 string str(std::string) = delete;
 string str(string) = delete;
+string str(std::string_view) = delete;
+string str(string_view) = delete;
 
 #endif // FORMAT_HPP_27C3F464_170B_432E_9D44_3884DDBB95AC

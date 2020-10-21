@@ -31,81 +31,94 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "constitle.hpp"
+
+// Internal:
 #include "lang.hpp"
 #include "config.hpp"
 #include "farversion.hpp"
 #include "scrbuf.hpp"
 #include "strmix.hpp"
+#include "global.hpp"
+#include "mix.hpp"
+
+// Platform:
 #include "platform.concurrency.hpp"
+#include "platform.env.hpp"
 #include "platform.security.hpp"
 
-static const string& GetFarTitleAddons()
+// Common:
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
+
+static string expand_title_variables(string_view const Str)
 {
 	// " - Far%Ver%Admin"
 	/*
-		%Ver      - 2.0
-		%Build    - 1259
+		%Ver      - 3.0.5660.0
 		%Platform - x86
 		%Admin    - MFarTitleAddonsAdmin
 		%PID      - current PID
 	*/
-	static string strTitleAddons;
 
-	strTitleAddons = concat(L" - Far "_sv, os::env::expand(Global->Opt->strTitleAddons));
+	static const auto Version = version_to_string(build::version());
+	static const auto Platform = build::platform();
+	static const auto IsAdmin = os::security::is_admin() ? msg(lng::MFarTitleAddonsAdmin) : L""sv;
+	static const auto Pid = str(GetCurrentProcessId());
 
-	static const string strVer = concat(str(FAR_VERSION.Major), L'.', str(FAR_VERSION.Minor));
-	static const string strBuild = str(FAR_VERSION.Build);
-	static const string strPID = str(GetCurrentProcessId());
+	auto ExpandedStr = os::env::expand(Str);
 
-	ReplaceStrings(strTitleAddons, L"%PID", strPID, true);
-	ReplaceStrings(strTitleAddons, L"%Ver", strVer, true);
-	ReplaceStrings(strTitleAddons, L"%Build", strBuild, true);
-	ReplaceStrings(strTitleAddons,L"%Platform",
-#ifdef _WIN64
-#ifdef _M_IA64
-	L"IA64",
-#else
-	L"x64",
-#endif
-#else
-	L"x86",
-#endif
-	true);
-	ReplaceStrings(strTitleAddons, L"%Admin", os::security::is_admin() ? msg(lng::MFarTitleAddonsAdmin) : L"", true);
-	inplace::trim_right(strTitleAddons);
+	replace_icase(ExpandedStr, L"%Ver.%Build"sv, Version); // For compatibility
+	replace_icase(ExpandedStr, L"%Ver"sv, Version);
+	replace_icase(ExpandedStr, L"%Platform"sv, Platform);
+	replace_icase(ExpandedStr, L"%Admin"sv, IsAdmin);
+	replace_icase(ExpandedStr, L"%PID"sv, Pid);
 
-	return strTitleAddons;
+	inplace::trim_right(ExpandedStr);
+
+	return ExpandedStr;
 }
 
-static string& UserTitle()
+static string& user_title()
 {
-	static string str;
-	return str;
+	static string s_UserTitle;
+	return s_UserTitle;
 }
 
-static string& FarTitle()
+static string& far_title()
 {
-	static string strFarTitle;
-	return strFarTitle;
+	static string s_FarTitle;
+	return s_FarTitle;
 }
 
-void ConsoleTitle::SetUserTitle(const string& Title)
+static string bake_title(string_view const NewTitle)
 {
-	UserTitle() = Title;
+	if (user_title().empty())
+		return concat(NewTitle, L" - Far "sv, expand_title_variables(Global->Opt->strTitleAddons));
+
+	auto CustomizedTitle = expand_title_variables(user_title());
+	replace_icase(CustomizedTitle, L"%Default"sv, NewTitle);
+	return CustomizedTitle;
 }
 
-os::critical_section TitleCS;
-
-void ConsoleTitle::SetFarTitle(const string& Title, bool Flush)
+void ConsoleTitle::SetUserTitle(string_view const Title)
 {
-	SCOPED_ACTION(os::critical_section_lock)(TitleCS);
+	user_title() = Title;
+}
 
-	FarTitle() = Title;
-	Global->ScrBuf->SetTitle(UserTitle().empty()? FarTitle() + GetFarTitleAddons() : UserTitle());
+static os::critical_section TitleCS;
+
+void ConsoleTitle::SetFarTitle(string_view const Title, bool Flush)
+{
+	SCOPED_ACTION(std::lock_guard)(TitleCS);
+
+	far_title() = Title;
+	Global->ScrBuf->SetTitle(bake_title(Title));
+
 	if (Flush)
 	{
 		Global->ScrBuf->Flush(flush_type::title);
@@ -114,5 +127,5 @@ void ConsoleTitle::SetFarTitle(const string& Title, bool Flush)
 
 const string& ConsoleTitle::GetTitle()
 {
-	return FarTitle();
+	return far_title();
 }

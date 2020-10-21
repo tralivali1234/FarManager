@@ -29,24 +29,41 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "headers.hpp"
-#pragma hdrstop
-
+// Self:
 #include "plclass.hpp"
+
+// Internal:
 #include "plugins.hpp"
 #include "pathmix.hpp"
 #include "config.hpp"
-#include "chgprior.hpp"
 #include "farversion.hpp"
 #include "plugapi.hpp"
 #include "message.hpp"
 #include "dirmix.hpp"
 #include "strmix.hpp"
-#include "FarGuid.hpp"
-#include "processname.hpp"
+#include "uuids.far.hpp"
 #include "lang.hpp"
 #include "language.hpp"
 #include "configdb.hpp"
+#include "global.hpp"
+#include "encoding.hpp"
+#include "exception_handler.hpp"
+
+// Platform:
+#include "platform.env.hpp"
+#include "platform.fs.hpp"
+
+// Common:
+#include "common/enum_tokens.hpp"
+#include "common/scope_exit.hpp"
+#include "common/uuid.hpp"
+#include "common/view/zip.hpp"
+
+
+// External:
+#include "format.hpp"
+
+//----------------------------------------------------------------------------
 
 std::exception_ptr& GlobalExceptionPtr()
 {
@@ -100,7 +117,7 @@ std::unique_ptr<Plugin> plugin_factory::CreatePlugin(const string& filename)
 plugin_factory::plugin_factory(PluginManager* owner):
 	m_owner(owner)
 {
-	static const export_name ExportsNames[] =
+	static const export_name ExportsNames[]
 	{
 		WA("GetGlobalInfoW"),
 		WA("SetStartupInfoW"),
@@ -136,38 +153,17 @@ plugin_factory::plugin_factory(PluginManager* owner):
 		WA("GetContentDataW"),
 		WA("FreeContentDataW"),
 
-		WA(""), // OpenFilePlugin not used
-		WA(""), // GetMinFarVersion not used
+		{}, // OpenFilePlugin not used
+		{}, // GetMinFarVersion not used
 	};
 	static_assert(std::size(ExportsNames) == ExportsCount);
-	m_ExportsNames = make_range(ExportsNames);
-}
-
-bool native_plugin_factory::IsPlugin(const string& filename) const
-{
-	if (!CmpName(L"*.dll"_sv, filename, false))
-		return false;
-
-	const auto ModuleFile = os::fs::create_file(filename, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING);
-	if (!ModuleFile)
-		return false;
-
-	const auto ModuleMapping = os::handle(CreateFileMapping(ModuleFile.native_handle(), nullptr, PAGE_READONLY, 0, 0, nullptr));
-	if (!ModuleMapping)
-		return false;
-
-	const auto Data = MapViewOfFile(ModuleMapping.native_handle(), FILE_MAP_READ, 0, 0, 0);
-	if (!Data)
-		return false;
-
-	SCOPE_EXIT{ UnmapViewOfFile(Data); };
-	return IsPlugin2(Data);
+	m_ExportsNames = ExportsNames;
 }
 
 plugin_factory::plugin_module_ptr native_plugin_factory::Create(const string& filename)
 {
 	auto Module = std::make_unique<native_plugin_module>(filename);
-	if (!Module->m_Module)
+	if (!*Module)
 	{
 		const auto ErrorState = error_state::fetch();
 
@@ -180,7 +176,7 @@ plugin_factory::plugin_module_ptr native_plugin_factory::Create(const string& fi
 				filename
 			},
 			{ lng::MOk },
-			L"ErrLoadPlugin");
+			L"ErrLoadPlugin"sv);
 
 	}
 	return Module;
@@ -192,70 +188,43 @@ bool native_plugin_factory::Destroy(plugin_factory::plugin_module_ptr& instance)
 	return true;
 }
 
-plugin_factory::function_address native_plugin_factory::GetFunction(const plugin_factory::plugin_module_ptr& Instance, const plugin_factory::export_name& Name)
+plugin_factory::function_address native_plugin_factory::Function(const plugin_factory::plugin_module_ptr& Instance, const plugin_factory::export_name& Name)
 {
-	return !Name.AName.empty()? static_cast<native_plugin_module*>(Instance.get())->m_Module.GetProcAddress(null_terminated_t<char>(Name.AName).data()) : nullptr;
+	return !Name.AName.empty()? static_cast<native_plugin_module*>(Instance.get())->GetProcAddress<function_address>(null_terminated_t<char>(Name.AName).c_str()) : nullptr;
 }
 
-bool native_plugin_factory::FindExport(const basic_string_view<char>& ExportName) const
+bool native_plugin_factory::FindExport(const std::string_view ExportName) const
 {
 	// only module with GetGlobalInfoW can be native plugin
 	return ExportName == m_ExportsNames[iGetGlobalInfo].AName;
 }
 
-bool native_plugin_factory::IsPlugin2(const void* Module) const
+template<typename T>
+static decltype(auto) view_as(void const* const BaseAddress, IMAGE_SECTION_HEADER const& Section, size_t const VirtualAddress)
 {
-	return seh_invoke_no_ui([&]
-	{
-		const auto pDOSHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(Module);
-		if (pDOSHeader->e_magic != IMAGE_DOS_SIGNATURE)
-			return false;
+	return view_as<T>(BaseAddress, Section.PointerToRawData + (VirtualAddress - Section.VirtualAddress));
+}
 
-		const auto pPEHeader = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(Module) + pDOSHeader->e_lfanew);
-
-		if (pPEHeader->Signature != IMAGE_NT_SIGNATURE)
-			return false;
-
-		if (!(pPEHeader->FileHeader.Characteristics & IMAGE_FILE_DLL))
-			return false;
-
-		static const auto FarMachineType = []
-		{
-			const auto FarModule = GetModuleHandle(nullptr);
-			return reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(FarModule) + reinterpret_cast<const IMAGE_DOS_HEADER*>(FarModule)->e_lfanew)->FileHeader.Machine;
-		}();
-
-		if (pPEHeader->FileHeader.Machine != FarMachineType)
-			return false;
-
-		const auto dwExportAddr = pPEHeader->OptionalHeader.DataDirectory[0].VirtualAddress;
-
-		if (!dwExportAddr)
-			return false;
-
-		for (const auto& Section: make_range(IMAGE_FIRST_SECTION(pPEHeader), pPEHeader->FileHeader.NumberOfSections))
-		{
-			if ((Section.VirtualAddress == dwExportAddr) ||
-				((Section.VirtualAddress <= dwExportAddr) && ((Section.Misc.VirtualSize + Section.VirtualAddress) > dwExportAddr)))
-			{
-				const auto& GetAddress = [&](size_t Offset)
-				{
-					return reinterpret_cast<const char*>(Module) + Section.PointerToRawData - Section.VirtualAddress + Offset;
-				};
-
-				const auto pExportDir = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(GetAddress(dwExportAddr));
-				const auto pNames = reinterpret_cast<const DWORD*>(GetAddress(pExportDir->AddressOfNames));
-
-				if (std::any_of(pNames, pNames + pExportDir->NumberOfNames, [&](DWORD NameOffset)
-				{
-					return FindExport(reinterpret_cast<const char *>(GetAddress(NameOffset)));
-				}))
-				{
-					return true;
-				}
-			}
-		}
+bool native_plugin_factory::IsPlugin(const string& FileName) const
+{
+	if (!ends_with_icase(FileName, L".dll"sv))
 		return false;
+
+	const os::fs::file ModuleFile(FileName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING);
+	if (!ModuleFile)
+		return false;
+
+	const os::handle ModuleMapping(CreateFileMapping(ModuleFile.get().native_handle(), nullptr, PAGE_READONLY, 0, 0, nullptr));
+	if (!ModuleMapping)
+		return false;
+
+	const os::fs::file_view Data(MapViewOfFile(ModuleMapping.native_handle(), FILE_MAP_READ, 0, 0, 0));
+	if (!Data)
+		return false;
+
+	return seh_try_no_ui([&]
+	{
+		return IsPlugin(Data.get());
 	},
 	[]
 	{
@@ -264,103 +233,64 @@ bool native_plugin_factory::IsPlugin2(const void* Module) const
 	});
 }
 
-static void PrepareModulePath(const string& ModuleName)
+bool native_plugin_factory::IsPlugin(const void* Data) const
 {
-	string strModulePath = ModuleName;
+	const auto& DosHeader = view_as<IMAGE_DOS_HEADER>(Data, 0);
+	if (DosHeader.e_magic != IMAGE_DOS_SIGNATURE)
+		return false;
+
+	const auto& NtHeaders = view_as<IMAGE_NT_HEADERS>(Data, DosHeader.e_lfanew);
+
+	if (NtHeaders.Signature != IMAGE_NT_SIGNATURE)
+		return false;
+
+	if (!(NtHeaders.FileHeader.Characteristics & IMAGE_FILE_DLL))
+		return false;
+
+	static const auto FarMachineType = []
+	{
+		const auto FarModule = GetModuleHandle(nullptr);
+		const auto& FarDosHeader = view_as<IMAGE_DOS_HEADER>(FarModule, 0);
+		const auto& FarNtHeaders = view_as<IMAGE_NT_HEADERS>(FarModule, FarDosHeader.e_lfanew);
+		return FarNtHeaders.FileHeader.Machine;
+	}();
+
+	if (NtHeaders.FileHeader.Machine != FarMachineType)
+		return false;
+
+	const auto ExportDirectoryAddress = NtHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+	if (!ExportDirectoryAddress)
+		return false;
+
+	const auto FirstSection = view_as<IMAGE_SECTION_HEADER const*>(&NtHeaders, offsetof(IMAGE_NT_HEADERS, OptionalHeader) + NtHeaders.FileHeader.SizeOfOptionalHeader);
+	const span Sections(FirstSection, NtHeaders.FileHeader.NumberOfSections);
+	const auto SectionIterator = std::find_if(ALL_CONST_RANGE(Sections), [&](IMAGE_SECTION_HEADER const& Section)
+	{
+		return
+			Section.VirtualAddress == ExportDirectoryAddress ||
+			(Section.VirtualAddress <= ExportDirectoryAddress && ExportDirectoryAddress < Section.VirtualAddress + Section.Misc.VirtualSize);
+	});
+
+	if (SectionIterator == Sections.cend())
+		return false;
+
+	const auto& ExportDirectory = view_as<IMAGE_EXPORT_DIRECTORY>(Data, *SectionIterator, ExportDirectoryAddress);
+	const span Names(view_as<DWORD const*>(Data, *SectionIterator, ExportDirectory.AddressOfNames), ExportDirectory.NumberOfNames);
+
+	return std::any_of(ALL_CONST_RANGE(Names), [&](DWORD const NameAddress)
+	{
+		return FindExport(view_as<char const*>(Data, *SectionIterator, NameAddress));
+	});
+}
+
+static void PrepareModulePath(string_view const ModuleName)
+{
+	auto strModulePath = ModuleName;
 	CutToSlash(strModulePath); //??
 	FarChDir(strModulePath);
 }
 
-FarStandardFunctions NativeFSF =
-{
-	sizeof(NativeFSF),
-	pluginapi::apiAtoi,
-	pluginapi::apiAtoi64,
-	pluginapi::apiItoa,
-	pluginapi::apiItoa64,
-	pluginapi::apiSprintf,
-	pluginapi::apiSscanf,
-	pluginapi::apiQsort,
-	pluginapi::apiBsearch,
-	pluginapi::apiSnprintf,
-	pluginapi::apiIsLower,
-	pluginapi::apiIsUpper,
-	pluginapi::apiIsAlpha,
-	pluginapi::apiIsAlphaNum,
-	pluginapi::apiUpper,
-	pluginapi::apiLower,
-	pluginapi::apiUpperBuf,
-	pluginapi::apiLowerBuf,
-	pluginapi::apiStrUpper,
-	pluginapi::apiStrLower,
-	pluginapi::apiStrCmpI,
-	pluginapi::apiStrCmpNI,
-	pluginapi::apiUnquote,
-	pluginapi::apiRemoveLeadingSpaces,
-	pluginapi::apiRemoveTrailingSpaces,
-	pluginapi::apiRemoveExternalSpaces,
-	pluginapi::apiTruncStr,
-	pluginapi::apiTruncPathStr,
-	pluginapi::apiQuoteSpaceOnly,
-	pluginapi::apiPointToName,
-	pluginapi::apiGetPathRoot,
-	pluginapi::apiAddEndSlash,
-	pluginapi::apiCopyToClipboard,
-	pluginapi::apiPasteFromClipboard,
-	pluginapi::apiInputRecordToKeyName,
-	pluginapi::apiKeyNameToInputRecord,
-	pluginapi::apiXlat,
-	pluginapi::apiGetFileOwner,
-	pluginapi::apiGetNumberOfLinks,
-	pluginapi::apiRecursiveSearch,
-	pluginapi::apiMkTemp,
-	pluginapi::apiProcessName,
-	pluginapi::apiMkLink,
-	pluginapi::apiConvertPath,
-	pluginapi::apiGetReparsePointInfo,
-	pluginapi::apiGetCurrentDirectory,
-	pluginapi::apiFormatFileSize,
-	pluginapi::apiFarClock,
-};
-
-PluginStartupInfo NativeInfo =
-{
-	sizeof(NativeInfo),
-	nullptr, //ModuleName, dynamic
-	pluginapi::apiMenuFn,
-	pluginapi::apiMessageFn,
-	pluginapi::apiGetMsgFn,
-	pluginapi::apiPanelControl,
-	pluginapi::apiSaveScreen,
-	pluginapi::apiRestoreScreen,
-	pluginapi::apiGetDirList,
-	pluginapi::apiGetPluginDirList,
-	pluginapi::apiFreeDirList,
-	pluginapi::apiFreePluginDirList,
-	pluginapi::apiViewer,
-	pluginapi::apiEditor,
-	pluginapi::apiText,
-	pluginapi::apiEditorControl,
-	nullptr, // FSF, dynamic
-	pluginapi::apiShowHelp,
-	pluginapi::apiAdvControl,
-	pluginapi::apiInputBox,
-	pluginapi::apiColorDialog,
-	pluginapi::apiDialogInit,
-	pluginapi::apiDialogRun,
-	pluginapi::apiDialogFree,
-	pluginapi::apiSendDlgMessage,
-	pluginapi::apiDefDlgProc,
-	pluginapi::apiViewerControl,
-	pluginapi::apiPluginsControl,
-	pluginapi::apiFileFilterControl,
-	pluginapi::apiRegExpControl,
-	pluginapi::apiMacroControl,
-	pluginapi::apiSettingsControl,
-	nullptr, //Private, dynamic
-};
-
-static ArclitePrivateInfo ArcliteInfo =
+static const ArclitePrivateInfo ArcliteInfo
 {
 	sizeof(ArcliteInfo),
 	pluginapi::apiCreateFile,
@@ -372,7 +302,7 @@ static ArclitePrivateInfo ArcliteInfo =
 	pluginapi::apiCreateDirectory
 };
 
-static NetBoxPrivateInfo NetBoxInfo =
+static const NetBoxPrivateInfo NetBoxInfo
 {
 	sizeof(NetBoxInfo),
 	pluginapi::apiCreateFile,
@@ -384,33 +314,26 @@ static NetBoxPrivateInfo NetBoxInfo =
 	pluginapi::apiCreateDirectory
 };
 
-static MacroPrivateInfo MacroInfo =
+static const MacroPrivateInfo MacroInfo
 {
 	sizeof(MacroPrivateInfo),
 	pluginapi::apiCallFar,
 };
 
-void CreatePluginStartupInfo(PluginStartupInfo *PSI, FarStandardFunctions *FSF)
-{
-	*PSI = NativeInfo;
-	*FSF = NativeFSF;
-	PSI->FSF = FSF;
-}
-
-void CreatePluginStartupInfo(const Plugin* pPlugin, PluginStartupInfo *PSI, FarStandardFunctions *FSF)
+static void CreatePluginStartupInfo(const Plugin* pPlugin, PluginStartupInfo *PSI, FarStandardFunctions *FSF)
 {
 	CreatePluginStartupInfo(PSI, FSF);
 
-	PSI->ModuleName = pPlugin->GetModuleName().data();
-	if (pPlugin->GetGUID() == Global->Opt->KnownIDs.Arclite.Id)
+	PSI->ModuleName = pPlugin->ModuleName().c_str();
+	if (pPlugin->Id() == Global->Opt->KnownIDs.Arclite.Id)
 	{
 		PSI->Private = &ArcliteInfo;
 	}
-	else if (pPlugin->GetGUID() == Global->Opt->KnownIDs.Netbox.Id)
+	else if (pPlugin->Id() == Global->Opt->KnownIDs.Netbox.Id)
 	{
 		PSI->Private = &NetBoxInfo;
 	}
-	else if (pPlugin->GetGUID() == Global->Opt->KnownIDs.Luamacro.Id)
+	else if (pPlugin->Id() == Global->Opt->KnownIDs.Luamacro.Id)
 	{
 		PSI->Private = &MacroInfo;
 	}
@@ -418,18 +341,13 @@ void CreatePluginStartupInfo(const Plugin* pPlugin, PluginStartupInfo *PSI, FarS
 
 static void ShowMessageAboutIllegalPluginVersion(const string& plg, const VersionInfo& required)
 {
-	const auto str = [](const VersionInfo& Version)
-	{
-		return format(L"{0}.{1}.{2}.{3}", Version.Major, Version.Minor, Version.Revision, Version.Build);
-	};
-
 	Message(MSG_WARNING|MSG_NOPLUGINS,
 		msg(lng::MError),
 		{
 			msg(lng::MPlgBadVers),
 			plg,
-			format(lng::MPlgRequired, str(required)),
-			format(lng::MPlgRequired2, str(FAR_VERSION))
+			format(msg(lng::MPlgRequired), version_to_string(required)),
+			format(msg(lng::MPlgRequired2), version_to_string(build::version()))
 		},
 		{ lng::MOk }
 	);
@@ -437,7 +355,7 @@ static void ShowMessageAboutIllegalPluginVersion(const string& plg, const Versio
 
 static auto MakeSignature(const os::fs::find_data& Data)
 {
-	return concat(to_hex_wstring(Data.nFileSize), to_hex_wstring(os::chrono::nt_clock::to_filetime(Data.CreationTime).dwLowDateTime), to_hex_wstring(os::chrono::nt_clock::to_filetime(Data.LastWriteTime).dwLowDateTime));
+	return concat(to_hex_wstring(Data.FileSize), to_hex_wstring(os::chrono::nt_clock::to_filetime(Data.CreationTime).dwLowDateTime), to_hex_wstring(os::chrono::nt_clock::to_filetime(Data.LastWriteTime).dwLowDateTime));
 }
 
 bool Plugin::SaveToCache()
@@ -449,7 +367,6 @@ bool Plugin::SaveToCache()
 
 	SCOPED_ACTION(auto)(PlCache->ScopedTransaction());
 
-	PlCache->DeleteCache(m_strCacheName);
 	const auto id = PlCache->CreateCache(m_strCacheName);
 
 	const bool bPreload = (Info.Flags & PF_PRELOAD);
@@ -462,10 +379,11 @@ bool Plugin::SaveToCache()
 	}
 
 	os::fs::find_data fdata;
-	os::fs::get_find_data(m_strModuleName, fdata);
+	// BUGBUG check result
+	(void)os::fs::get_find_data(m_strModuleName, fdata);
 	PlCache->SetSignature(id, MakeSignature(fdata));
 
-	const auto& SaveItems = [&PlCache, &id](const auto& Setter, const auto& Item)
+	const auto SaveItems = [&PlCache, &id](const auto& Setter, const PluginMenuItem& Item)
 	{
 		for (size_t i = 0; i != Item.Count; ++i)
 		{
@@ -480,16 +398,16 @@ bool Plugin::SaveToCache()
 	PlCache->SetCommandPrefix(id, NullToEmpty(Info.CommandPrefix));
 	PlCache->SetFlags(id, Info.Flags);
 
-	PlCache->SetMinFarVersion(id, &MinFarVersion);
-	PlCache->SetGuid(id, m_strGuid);
-	PlCache->SetVersion(id, &PluginVersion);
+	PlCache->SetMinFarVersion(id, m_MinFarVersion);
+	PlCache->SetUuid(id, m_strUuid);
+	PlCache->SetVersion(id, m_PluginVersion);
 	PlCache->SetTitle(id, strTitle);
 	PlCache->SetDescription(id, strDescription);
 	PlCache->SetAuthor(id, strAuthor);
 
-	for (const auto& i: zip(m_Factory->ExportsNames(), Exports))
+	for (const auto& [Name, Export]: zip(m_Factory->ExportsNames(), Exports))
 	{
-		PlCache->SetExportState(id, std::get<0>(i).UName, std::get<1>(i).second);
+		PlCache->SetExportState(id, Name.UName, Export != nullptr);
 	}
 
 	return true;
@@ -497,39 +415,27 @@ bool Plugin::SaveToCache()
 
 void Plugin::InitExports()
 {
-	std::transform(ALL_CONST_RANGE(m_Factory->ExportsNames()), Exports.begin(), [&](const auto& i)
+	for (const auto& [Name, Export]: zip(m_Factory->ExportsNames(), Exports))
 	{
-		const auto Address = m_Factory->GetFunction(m_Instance, i);
-		return std::make_pair(Address, Address != nullptr);
-	});
+		Export = m_Factory->Function(m_Instance, Name);
+	}
 }
 
 Plugin::Plugin(plugin_factory* Factory, const string& ModuleName):
 	m_Factory(Factory),
-	Activity(0),
-	bPendingRemove(false),
 	m_strModuleName(ModuleName),
 	m_strCacheName(ModuleName)
 {
 	ReplaceBackslashToSlash(m_strCacheName);
-	SetGuid(FarGuid);
+	SetUuid(FarUuid);
 }
 
-void Plugin::SetGuid(const GUID& Guid)
-{
-	m_Guid = Guid;
-	m_strGuid = GuidToStr(m_Guid);
-}
+Plugin::~Plugin() = default;
 
-static string VersionToString(const VersionInfo& PluginVersion)
+void Plugin::SetUuid(const UUID& Uuid)
 {
-	static const wchar_t* Stage[] = { L" Release", L" Alpha", L" Beta", L" RC"};
-	auto strVersion = format(L"{0}.{1}.{2} (build {3})", PluginVersion.Major, PluginVersion.Minor, PluginVersion.Revision, PluginVersion.Build);
-	if(PluginVersion.Stage != VS_RELEASE && static_cast<size_t>(PluginVersion.Stage) < std::size(Stage))
-	{
-		strVersion += Stage[PluginVersion.Stage];
-	}
-	return strVersion;
+	m_Uuid = Uuid;
+	m_strUuid = uuid::str(m_Uuid);
 }
 
 bool Plugin::LoadData()
@@ -544,12 +450,11 @@ bool Plugin::LoadData()
 		return true;
 
 	string strCurPlugDiskPath;
-	wchar_t Drive[]={0,L' ',L':',0}; //ставим 0, как признак того, что вертать обратно ненадо!
+	wchar_t Drive[]{ L'=', 0, L':', 0 };
 	const auto strCurPath = os::fs::GetCurrentDirectory();
 
 	if (ParsePath(m_strModuleName) == root_type::drive_letter)  // если указан локальный путь, то...
 	{
-		Drive[0] = L'=';
 		Drive[1] = m_strModuleName.front();
 		strCurPlugDiskPath = os::env::get(Drive);
 	}
@@ -558,7 +463,7 @@ bool Plugin::LoadData()
 	m_Instance = m_Factory->Create(m_strModuleName);
 	FarChDir(strCurPath);
 
-	if (Drive[0]) // вернем ее (переменную окружения) обратно
+	if (Drive[1]) // вернем ее (переменную окружения) обратно
 		os::env::set(Drive, strCurPlugDiskPath);
 
 	if (!m_Instance)
@@ -573,7 +478,7 @@ bool Plugin::LoadData()
 	if(bPendingRemove)
 	{
 		bPendingRemove = false;
-		m_Factory->GetOwner()->UndoRemove(this);
+		m_Factory->Owner()->UndoRemove(this);
 	}
 	InitExports();
 
@@ -585,24 +490,23 @@ bool Plugin::LoadData()
 		Info.Description && *Info.Description &&
  		Info.Author && *Info.Author)
 	{
-		MinFarVersion = Info.MinFarVersion;
-		PluginVersion = Info.Version;
-		VersionString = VersionToString(PluginVersion);
+		m_MinFarVersion = Info.MinFarVersion;
+		m_PluginVersion = Info.Version;
 		strTitle = Info.Title;
 		strDescription = Info.Description;
 		strAuthor = Info.Author;
 
 		bool ok = false;
 
-		if (Info.Guid != FarGuid)
+		if (Info.Guid != FarUuid)
 		{
-			if (m_Guid != FarGuid && m_Guid != Info.Guid)
+			if (m_Uuid != FarUuid && m_Uuid != Info.Guid)
 			{
-				ok = m_Factory->GetOwner()->UpdateId(this, Info.Guid);
+				ok = m_Factory->Owner()->UpdateId(this, Info.Guid);
 			}
 			else
 			{
-				SetGuid(Info.Guid);
+				SetUuid(Info.Guid);
 				ok = true;
 			}
 		}
@@ -621,7 +525,6 @@ bool Plugin::LoadData()
 
 bool Plugin::Load()
 {
-
 	if (WorkFlags.Check(PIWF_DONTLOADAGAIN))
 		return false;
 
@@ -664,80 +567,85 @@ bool Plugin::LoadFromCache(const os::fs::find_data &FindData)
 {
 	const auto& PlCache = ConfigProvider().PlCacheCfg();
 
-	if (const auto id = PlCache->GetCacheID(m_strCacheName))
+	const auto id = PlCache->GetCacheID(m_strCacheName);
+	if (!id)
+		return false;
+
+	if (PlCache->IsPreload(id))   //PF_PRELOAD plugin, skip cache
 	{
-		if (PlCache->IsPreload(id))   //PF_PRELOAD plugin, skip cache
-		{
-			WorkFlags.Set(PIWF_PRELOADED);
-			return false;
-		}
-
-		{
-			const auto strCurPluginID = MakeSignature(FindData);
-			const auto strPluginID = PlCache->GetSignature(id);
-
-			if (strPluginID != strCurPluginID)   //одинаковые ли бинарники?
-				return false;
-		}
-
-		if (!PlCache->GetMinFarVersion(id, &MinFarVersion))
-		{
-			MinFarVersion = FAR_VERSION;
-		}
-
-		if (!PlCache->GetVersion(id, &PluginVersion))
-		{
-			PluginVersion = {};
-		}
-		VersionString = VersionToString(PluginVersion);
-
-		m_strGuid = PlCache->GetGuid(id);
-		SetGuid(StrToGuid(m_strGuid,m_Guid)?m_Guid:FarGuid);
-		strTitle = PlCache->GetTitle(id);
-		strDescription = PlCache->GetDescription(id);
-		strAuthor = PlCache->GetAuthor(id);
-
-		std::transform(ALL_CONST_RANGE(m_Factory->ExportsNames()), Exports.begin(), [&PlCache, &id](const auto& i)
-		{
-			return std::make_pair(nullptr, PlCache->GetExportState(id, i.UName));
-		});
-
-		WorkFlags.Set(PIWF_CACHED); //too much "cached" flags
-		return true;
+		WorkFlags.Set(PIWF_PRELOADED);
+		return false;
 	}
-	return false;
+
+	{
+		const auto strCurPluginID = MakeSignature(FindData);
+		const auto strPluginID = PlCache->GetSignature(id);
+
+		if (strPluginID != strCurPluginID)   //одинаковые ли бинарники?
+			return false;
+	}
+
+	if (!PlCache->GetMinFarVersion(id, m_MinFarVersion))
+	{
+		m_MinFarVersion = build::version();
+	}
+
+	if (!PlCache->GetVersion(id, m_PluginVersion))
+	{
+		m_PluginVersion = {};
+	}
+
+	m_strUuid = PlCache->GetUuid(id);
+
+	if (const auto Uuid = uuid::try_parse(m_strUuid))
+		SetUuid(*Uuid);
+	else
+		SetUuid(FarUuid);
+
+	strTitle = PlCache->GetTitle(id);
+	strDescription = PlCache->GetDescription(id);
+	strAuthor = PlCache->GetAuthor(id);
+
+	for (const auto& [Name, Export]: zip(m_Factory->ExportsNames(), Exports))
+	{
+		if (PlCache->GetExportState(id, Name.UName))
+			Export = ToPtr(true); // Fake, will be overwritten with the real address later
+	}
+
+	WorkFlags.Set(PIWF_CACHED); //too many "cached" flags
+	return true;
 }
 
-int Plugin::Unload(bool bExitFAR)
+bool Plugin::Unload(bool bExitFAR)
 {
-	int nResult = TRUE;
+	if (!WorkFlags.Check(PIWF_LOADED))
+		return true;
 
-	if (WorkFlags.Check(PIWF_LOADED))
+	if (bExitFAR)
 	{
-		if (bExitFAR)
-		{
-			ExitInfo Info={sizeof(Info)};
-			ExitFAR(&Info);
-		}
-
-		if (!WorkFlags.Check(PIWF_CACHED))
-		{
-			nResult = m_Factory->Destroy(m_Instance);
-			ClearExports();
-		}
-
-		m_Instance = nullptr;
-		WorkFlags.Clear(PIWF_LOADED);
-		WorkFlags.Clear(PIWF_DATALOADED);
-		bPendingRemove = true;
+		ExitInfo Info={sizeof(Info)};
+		ExitFAR(&Info);
 	}
 
-	return nResult;
+	bool Result = true;
+
+	if (!WorkFlags.Check(PIWF_CACHED))
+	{
+		Result = m_Factory->Destroy(m_Instance);
+		ClearExports();
+	}
+
+	m_Instance = nullptr;
+	WorkFlags.Clear(PIWF_LOADED);
+	WorkFlags.Clear(PIWF_DATALOADED);
+	bPendingRemove = true;
+
+	return Result;
 }
 
 void Plugin::ClearExports()
 {
-	Exports.fill({ nullptr, false });
+	Exports.fill({});
 }
 
 void Plugin::AddDialog(const window_ptr& Dlg)
@@ -748,17 +656,16 @@ void Plugin::AddDialog(const window_ptr& Dlg)
 bool Plugin::RemoveDialog(const window_ptr& Dlg)
 {
 	const auto ItemIterator = m_dialogs.find(Dlg);
-	if (ItemIterator != m_dialogs.cend())
-	{
-		m_dialogs.erase(ItemIterator);
-		return true;
-	}
-	return false;
+	if (ItemIterator == m_dialogs.cend())
+		return false;
+
+	m_dialogs.erase(ItemIterator);
+	return true;
 }
 
 bool Plugin::IsPanelPlugin()
 {
-	static const int PanelExports[] =
+	static const int PanelExports[]
 	{
 		iSetFindList,
 		iGetFindData,
@@ -777,52 +684,51 @@ bool Plugin::IsPanelPlugin()
 		iFreeVirtualFindData,
 		iClosePanel,
 	};
+
 	return std::any_of(CONST_RANGE(PanelExports, i)
 	{
-		return Exports[i].second;
+		return Exports[i] != nullptr;
 	});
 }
 
 bool Plugin::SetStartupInfo(PluginStartupInfo *Info)
 {
 	ExecuteStruct<iSetStartupInfo> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
+	if (Global->ProcessException || !has(es))
+		return es;
 
-		if (bPendingRemove)
-		{
-			return false;
-		}
-	}
-	return true;
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
+	return !bPendingRemove;
 }
 
 bool Plugin::GetGlobalInfo(GlobalInfo* Info)
 {
 	ExecuteStruct<iGetGlobalInfo> es;
-	if (has(es))
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-		return !bPendingRemove;
-	}
-	return false;
+	if (!has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
+	return !bPendingRemove;
+}
+
+static bool CheckFarVersion(const VersionInfo& Desired)
+{
+	const auto FarVersion = build::version();
+	return CheckVersion(&FarVersion, &Desired) != FALSE;
 }
 
 bool Plugin::CheckMinFarVersion()
 {
-	if (!CheckVersion(&FAR_VERSION, &MinFarVersion))
-	{
-		ShowMessageAboutIllegalPluginVersion(m_strModuleName,MinFarVersion);
-		return false;
-	}
+	if (CheckFarVersion(m_MinFarVersion))
+		return true;
 
-	return true;
+	ShowMessageAboutIllegalPluginVersion(m_strModuleName, m_MinFarVersion);
+	return false;
 }
 
-bool Plugin::InitLang(const string& Path, const string& Language)
+bool Plugin::InitLang(string_view const Path, string_view const Language)
 {
 	if (PluginLang)
 		return true;
@@ -834,6 +740,7 @@ bool Plugin::InitLang(const string& Path, const string& Language)
 	}
 	catch (const std::exception&)
 	{
+		// TODO: log
 		return false;
 	}
 }
@@ -843,9 +750,9 @@ void Plugin::CloseLang()
 	PluginLang.reset();
 }
 
-const wchar_t* Plugin::GetMsg(intptr_t Id) const
+const wchar_t* Plugin::Msg(intptr_t Id) const
 {
-	return static_cast<const plugin_language&>(*PluginLang).GetMsg(Id);
+	return static_cast<const plugin_language&>(*PluginLang).Msg(Id);
 }
 
 void* Plugin::OpenFilePlugin(const wchar_t *Name, const unsigned char *Data, size_t DataSize, int OpMode)
@@ -856,241 +763,239 @@ void* Plugin::OpenFilePlugin(const wchar_t *Name, const unsigned char *Data, siz
 void* Plugin::Analyse(AnalyseInfo* Info)
 {
 	ExecuteStruct<iAnalyse> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
 void Plugin::CloseAnalyse(CloseAnalyseInfo* Info)
 {
 	ExecuteStruct<iCloseAnalyse> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
 void* Plugin::Open(OpenInfo* Info)
 {
-	SCOPED_ACTION(ChangePriority)(THREAD_PRIORITY_NORMAL);
 	ExecuteStruct<iOpen> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::SetFindList(SetFindListInfo* Info)
+intptr_t Plugin::SetFindList(SetFindListInfo* Info)
 {
 	ExecuteStruct<iSetFindList> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessEditorInput(ProcessEditorInputInfo* Info)
+intptr_t Plugin::ProcessEditorInput(ProcessEditorInputInfo* Info)
 {
 	ExecuteStruct<iProcessEditorInput> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessEditorEvent(ProcessEditorEventInfo* Info)
+intptr_t Plugin::ProcessEditorEvent(ProcessEditorEventInfo* Info)
 {
 	ExecuteStruct<iProcessEditorEvent> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessViewerEvent(ProcessViewerEventInfo* Info)
+intptr_t Plugin::ProcessViewerEvent(ProcessViewerEventInfo* Info)
 {
 	ExecuteStruct<iProcessViewerEvent> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessDialogEvent(ProcessDialogEventInfo* Info)
+intptr_t Plugin::ProcessDialogEvent(ProcessDialogEventInfo* Info)
 {
 	ExecuteStruct<iProcessDialogEvent> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessSynchroEvent(ProcessSynchroEventInfo* Info)
+intptr_t Plugin::ProcessSynchroEvent(ProcessSynchroEventInfo* Info)
 {
 	ExecuteStruct<iProcessSynchroEvent> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessConsoleInput(ProcessConsoleInputInfo *Info)
+intptr_t Plugin::ProcessConsoleInput(ProcessConsoleInputInfo *Info)
 {
 	ExecuteStruct<iProcessConsoleInput> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::GetVirtualFindData(GetVirtualFindDataInfo* Info)
+intptr_t Plugin::GetVirtualFindData(GetVirtualFindDataInfo* Info)
 {
 	ExecuteStruct<iGetVirtualFindData> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
 void Plugin::FreeVirtualFindData(FreeFindDataInfo* Info)
 {
 	ExecuteStruct<iFreeVirtualFindData> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
-int Plugin::GetFiles(GetFilesInfo* Info)
+intptr_t Plugin::GetFiles(GetFilesInfo* Info)
 {
 	ExecuteStruct<iGetFiles> es(-1);
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::PutFiles(PutFilesInfo* Info)
+intptr_t Plugin::PutFiles(PutFilesInfo* Info)
 {
 	ExecuteStruct<iPutFiles> es(-1);
+	if (Global->ProcessException || !has(es))
+		return es;
 
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::DeleteFiles(DeleteFilesInfo* Info)
+intptr_t Plugin::DeleteFiles(DeleteFilesInfo* Info)
 {
 	ExecuteStruct<iDeleteFiles> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::MakeDirectory(MakeDirectoryInfo* Info)
+intptr_t Plugin::MakeDirectory(MakeDirectoryInfo* Info)
 {
 	ExecuteStruct<iMakeDirectory> es(-1);
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessHostFile(ProcessHostFileInfo* Info)
+intptr_t Plugin::ProcessHostFile(ProcessHostFileInfo* Info)
 {
 	ExecuteStruct<iProcessHostFile> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::ProcessPanelEvent(ProcessPanelEventInfo* Info)
+intptr_t Plugin::ProcessPanelEvent(ProcessPanelEventInfo* Info)
 {
 	ExecuteStruct<iProcessPanelEvent> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::Compare(CompareInfo* Info)
+intptr_t Plugin::Compare(CompareInfo* Info)
 {
 	ExecuteStruct<iCompare> es(-2);
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::GetFindData(GetFindDataInfo* Info)
+intptr_t Plugin::GetFindData(GetFindDataInfo* Info)
 {
 	ExecuteStruct<iGetFindData> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
 void Plugin::FreeFindData(FreeFindDataInfo* Info)
 {
 	ExecuteStruct<iFreeFindData> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
-int Plugin::ProcessPanelInput(ProcessPanelInputInfo* Info)
+intptr_t Plugin::ProcessPanelInput(ProcessPanelInputInfo* Info)
 {
 	ExecuteStruct<iProcessPanelInput> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
@@ -1098,44 +1003,44 @@ int Plugin::ProcessPanelInput(ProcessPanelInputInfo* Info)
 void Plugin::ClosePanel(ClosePanelInfo* Info)
 {
 	ExecuteStruct<iClosePanel> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
 
-int Plugin::SetDirectory(SetDirectoryInfo* Info)
+intptr_t Plugin::SetDirectory(SetDirectoryInfo* Info)
 {
 	ExecuteStruct<iSetDirectory> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
 void Plugin::GetOpenPanelInfo(OpenPanelInfo* Info)
 {
 	ExecuteStruct<iGetOpenPanelInfo> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
 
-int Plugin::Configure(ConfigureInfo* Info)
+intptr_t Plugin::Configure(ConfigureInfo* Info)
 {
 	ExecuteStruct<iConfigure> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
@@ -1143,62 +1048,99 @@ int Plugin::Configure(ConfigureInfo* Info)
 bool Plugin::GetPluginInfo(PluginInfo* Info)
 {
 	ExecuteStruct<iGetPluginInfo> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-		if (!bPendingRemove)
-			return true;
-	}
-	return false;
+	if (Global->ProcessException || !has(es))
+		return false;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
+	return !bPendingRemove;
 }
 
-int Plugin::GetContentFields(GetContentFieldsInfo *Info)
+intptr_t Plugin::GetContentFields(GetContentFieldsInfo *Info)
 {
 	ExecuteStruct<iGetContentFields> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
-int Plugin::GetContentData(GetContentDataInfo *Info)
+intptr_t Plugin::GetContentData(GetContentDataInfo *Info)
 {
 	ExecuteStruct<iGetContentData> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return es;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 	return es;
 }
 
 void Plugin::FreeContentData(GetContentDataInfo *Info)
 {
 	ExecuteStruct<iFreeContentData> es;
-	if (Load() && has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !Load() || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
 void Plugin::ExitFAR(ExitInfo *Info)
 {
 	ExecuteStruct<iExitFAR> es;
-	if (has(es) && !Global->ProcessException)
-	{
-		SetInstance(Info);
-		ExecuteFunction(es, Info);
-	}
+	if (Global->ProcessException || !has(es))
+		return;
+
+	SetInstance(Info);
+	ExecuteFunction(es, Info);
 }
 
-void Plugin::HandleFailure(EXPORTS_ENUM id)
+void Plugin::ExecuteFunctionImpl(export_index const ExportId, function_ref<void()> const Callback)
 {
-	m_Factory->GetOwner()->UnloadPlugin(this, id);
-	Global->ProcessException = false;
+	const auto HandleFailure = [&]
+	{
+		if (use_terminate_handler())
+			std::_Exit(EXIT_FAILURE);
+
+		m_Factory->Owner()->UnloadPlugin(this, ExportId);
+		Global->ProcessException = false;
+	};
+
+	seh_try_with_ui(
+	[&]
+	{
+		Prologue(); ++Activity;
+		SCOPE_EXIT{ --Activity; Epilogue(); };
+
+		const auto HandleException = [&](const auto& Handler, auto&&... ProcArgs)
+		{
+			Handler(FWD(ProcArgs)..., m_Factory->ExportsNames()[ExportId].AName, this)? HandleFailure() : throw;
+		};
+
+		cpp_try(
+		[&]
+		{
+			Callback();
+			rethrow_if(GlobalExceptionPtr());
+			m_Factory->ProcessError(m_Factory->ExportsNames()[ExportId].AName);
+		},
+		[&]
+		{
+			HandleException(handle_unknown_exception);
+		},
+		[&](std::exception const& e)
+		{
+			HandleException(handle_std_exception, e);
+		});
+	},
+	[&]
+	{
+		HandleFailure();
+	},
+	m_Factory->ExportsNames()[ExportId].AName, this);
 }
 
 class custom_plugin_module: public i_plugin_module
@@ -1206,7 +1148,7 @@ class custom_plugin_module: public i_plugin_module
 public:
 	NONCOPYABLE(custom_plugin_module);
 	explicit custom_plugin_module(void* Opaque) : m_Opaque(Opaque) {}
-	virtual void* get_opaque() const override { return m_Opaque; }
+	void* opaque() const override { return m_Opaque; }
 
 private:
 	void* m_Opaque;
@@ -1218,9 +1160,7 @@ public:
 	NONCOPYABLE(custom_plugin_factory);
 	custom_plugin_factory(PluginManager* Owner, const string& Filename):
 		plugin_factory(Owner),
-		m_Module(Filename),
-		m_Imports(m_Module),
-		m_Success(false)
+		m_Imports(Filename)
 	{
 		GlobalInfo Info = { sizeof(Info) };
 
@@ -1231,60 +1171,66 @@ public:
 			Info.Description && *Info.Description &&
 			Info.Author && *Info.Author)
 		{
-			m_Success = CheckVersion(&FAR_VERSION, &Info.MinFarVersion) != FALSE;
+			m_Success = CheckFarVersion(Info.MinFarVersion);
+			if (m_Success)
+			{
+				m_Version = Info.Version;
+				m_Title = Info.Title;
+				m_Id = Info.Guid;
+			}
 			// TODO: store info, show message if version is bad
 		}
-		custom_plugin_factory::ProcessError(L"Initialize"_sv);
+		custom_plugin_factory::ProcessError(m_Imports.pInitialize.name());
 	}
 
-	~custom_plugin_factory()
+	~custom_plugin_factory() override
 	{
 		if (!m_Success)
 			return;
 
 		ExitInfo Info = { sizeof(Info) };
 		m_Imports.pFree(&Info);
-		custom_plugin_factory::ProcessError(L"Free"_sv);
+		custom_plugin_factory::ProcessError(m_Imports.pFree.name());
 	}
 
 	bool Success() const { return m_Success; }
 
-	virtual bool IsPlugin(const string& Filename) const override
+	bool IsPlugin(const string& Filename) const override
 	{
-		const auto Result = m_Imports.pIsPlugin(Filename.data()) != FALSE;
-		ProcessError(L"IsPlugin"_sv);
+		const auto Result = m_Imports.pIsPlugin(Filename.c_str()) != FALSE;
+		ProcessError(m_Imports.pIsPlugin.name());
 		return Result;
 	}
 
-	virtual plugin_module_ptr Create(const string& Filename) override
+	plugin_module_ptr Create(const string& Filename) override
 	{
-		auto Module = std::make_unique<custom_plugin_module>(m_Imports.pCreateInstance(Filename.data()));
-		if (!Module->get_opaque())
+		auto Module = std::make_unique<custom_plugin_module>(m_Imports.pCreateInstance(Filename.c_str()));
+		if (!Module->opaque())
 		{
 			Module.reset();
 		}
-		ProcessError(L"Create"_sv);
+		ProcessError(m_Imports.pCreateInstance.name());
 		return Module;
 	}
 
-	virtual bool Destroy(plugin_module_ptr& Module) override
+	bool Destroy(plugin_module_ptr& Module) override
 	{
-		const auto Result = m_Imports.pDestroyInstance(static_cast<custom_plugin_module*>(Module.get())->get_opaque()) != FALSE;
+		const auto Result = m_Imports.pDestroyInstance(static_cast<custom_plugin_module*>(Module.get())->opaque()) != FALSE;
 		Module.reset();
-		ProcessError(L"Destroy"_sv);
+		ProcessError(m_Imports.pDestroyInstance.name());
 		return Result;
 	}
 
-	virtual function_address GetFunction(const plugin_module_ptr& Instance, const export_name& Name) override
+	function_address Function(const plugin_module_ptr& Instance, const export_name& Name) override
 	{
 		if (Name.UName.empty())
 			return nullptr;
-		const auto Result = m_Imports.pGetFunctionAddress(static_cast<custom_plugin_module*>(Instance.get())->get_opaque(), null_terminated(Name.UName).data());
-		ProcessError(L"GetFunction"_sv);
+		const auto Result = m_Imports.pGetFunctionAddress(static_cast<custom_plugin_module*>(Instance.get())->opaque(), null_terminated(Name.UName).c_str());
+		ProcessError(m_Imports.pGetFunctionAddress.name());
 		return Result;
 	}
 
-	virtual void ProcessError(const string_view& Function) const override
+	void ProcessError(const std::string_view Function) const override
 	{
 		if (!m_Imports.pGetError)
 			return;
@@ -1294,37 +1240,51 @@ public:
 			return;
 
 		std::vector<string> MessageLines;
-		const string Summary = concat(Info.Summary, L" ("_sv, Function, L')');
-		const auto Enumerator = enum_tokens(Info.Description, L"\n"_sv);
-		std::transform(ALL_CONST_RANGE(Enumerator), std::back_inserter(MessageLines), [](const string_view& View) { return string(View); });
+		const string Summary = concat(Info.Summary, L" ("sv, encoding::utf8::get_chars(Function), L')');
+		const auto Enumerator = enum_tokens(Info.Description, L"\n"sv);
+		std::transform(ALL_CONST_RANGE(Enumerator), std::back_inserter(MessageLines), [](const string_view View) { return string(View); });
 		Message(MSG_WARNING | MSG_LEFTALIGN,
 			Summary,
 			MessageLines,
 			{ lng::MOk });
 	}
 
+	bool IsExternal() const override
+	{
+		return true;
+	}
+
+	string Title() const override
+	{
+		return m_Title;
+	}
+
+	VersionInfo version() const override
+	{
+		return m_Version;
+	}
+
 private:
-	os::rtdl::module m_Module;
 	struct ModuleImports
 	{
-		os::rtdl::function_pointer<BOOL(WINAPI*)(GlobalInfo* info)> pInitialize;
-		os::rtdl::function_pointer<BOOL(WINAPI*)(const wchar_t* filename)> pIsPlugin;
-		os::rtdl::function_pointer<HANDLE(WINAPI*)(const wchar_t* filename)> pCreateInstance;
-		os::rtdl::function_pointer<void*(WINAPI*)(HANDLE Instance, const wchar_t* functionname)> pGetFunctionAddress;
-		os::rtdl::function_pointer<BOOL (WINAPI*)(ErrorInfo* info)> pGetError;
-		os::rtdl::function_pointer<BOOL(WINAPI*)(HANDLE Instance)> pDestroyInstance;
-		os::rtdl::function_pointer<void (WINAPI*)(const ExitInfo* info)> pFree;
+	private:
+		os::rtdl::module m_Module;
 
-		explicit ModuleImports(const os::rtdl::module& Module):
-			#define INIT_IMPORT(name) p ## name(Module, #name)
-			INIT_IMPORT(Initialize),
-			INIT_IMPORT(IsPlugin),
-			INIT_IMPORT(CreateInstance),
-			INIT_IMPORT(GetFunctionAddress),
-			INIT_IMPORT(GetError),
-			INIT_IMPORT(DestroyInstance),
-			INIT_IMPORT(Free),
-			#undef INIT_IMPORT
+	public:
+#define DECLARE_IMPORT_FUNCTION(name, ...) os::rtdl::function_pointer<__VA_ARGS__> p ## name{ m_Module, #name }
+
+		DECLARE_IMPORT_FUNCTION(Initialize,            BOOL(WINAPI*)(GlobalInfo* info));
+		DECLARE_IMPORT_FUNCTION(IsPlugin,              BOOL(WINAPI*)(const wchar_t* filename));
+		DECLARE_IMPORT_FUNCTION(CreateInstance,        HANDLE(WINAPI*)(const wchar_t* filename));
+		DECLARE_IMPORT_FUNCTION(GetFunctionAddress,    void*(WINAPI*)(HANDLE Instance, const wchar_t* functionname));
+		DECLARE_IMPORT_FUNCTION(GetError,              BOOL(WINAPI*)(ErrorInfo* info));
+		DECLARE_IMPORT_FUNCTION(DestroyInstance,       BOOL(WINAPI*)(HANDLE Instance));
+		DECLARE_IMPORT_FUNCTION(Free,                  void (WINAPI*)(const ExitInfo* info));
+
+#undef DECLARE_IMPORT_FUNCTION
+
+		explicit ModuleImports(const string& Filename):
+			m_Module(Filename),
 			m_IsValid(pInitialize && pIsPlugin && pCreateInstance && pGetFunctionAddress && pGetError && pDestroyInstance && pFree)
 		{
 		}
@@ -1335,7 +1295,9 @@ private:
 		bool m_IsValid;
 	}
 	m_Imports;
-	bool m_Success;
+	string m_Title;
+	VersionInfo m_Version{};
+	bool m_Success{};
 };
 
 plugin_factory_ptr CreateCustomPluginFactory(PluginManager* Owner, const string& Filename)
